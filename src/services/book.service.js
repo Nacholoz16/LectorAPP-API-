@@ -7,65 +7,55 @@ class BookService {
     async search(query) {
         if (!query) return [];
 
-        // 1. Ejecutar búsquedas en paralelo (Local y Externa)
+        // 1. Paralelismo: Buscamos en casa y fuera de casa al mismo tiempo
         const [localResults, externalResults] = await Promise.all([
-            BookModel.searchLocal(query),       // Tu base de datos MySQL
-            OpenLibraryUtils.searchBooks(query) // API OpenLibrary
+            BookModel.searchLocal(query),
+            OpenLibraryUtils.searchBooks(query)
         ]);
 
-        // 2. Normalizar resultados locales (agregando bandera is_local)
-        const normalizedLocal = localResults.map(book => 
-            this._normalizeBook(book, 'local')
-        );
+        // 2. Normalizar resultados locales
+        const normalizedLocal = localResults.map(book => this._normalizeBook(book, 'local'));
 
-        // 3. Crear un Set de IDs locales para filtrar duplicados rápidamente
+        // 3. Crear índice de IDs locales para filtrar duplicados
         const localIds = new Set(normalizedLocal.map(b => b.external_id));
 
-        // 4. Normalizar y Filtrar externos (solo los que NO estén ya en local)
+        // 4. Normalizar y Filtrar externos (Solo los nuevos)
         const normalizedExternal = externalResults
-            .filter(book => !localIds.has(book.external_id))
+            .filter(book => !localIds.has(book.external_id)) // Si ya lo tengo, uso el mío
             .map(book => this._normalizeBook(book, 'api'));
 
-        // 5. Combinar: Locales primero (prioridad) + Externos nuevos
+        // 5. Retornar mezcla (Locales primero)
         return [...normalizedLocal, ...normalizedExternal];
     }
 
     // --- El Normalizador Universal (Privado) ---
     _normalizeBook(rawBook, source) {
         return {
-            // Identificadores
-            external_id: rawBook.external_id || rawBook.google_id, // Unificar ID
-            
-            // Datos principales (Resuelve la inconsistencia author vs authors)
+            external_id: rawBook.external_id || rawBook.google_id,
             title: rawBook.title,
-            authors: rawBook.authors || rawBook.author || 'Desconocido', 
+            // Aquí arreglamos el problema de author vs authors para siempre
+            authors: rawBook.authors || rawBook.author || 'Desconocido',
             cover_url: rawBook.cover_url,
-            
-            // Metadatos opcionales
             isbn: rawBook.isbn || null,
             page_count: rawBook.page_count || null,
             published_year: rawBook.published_year || null,
-
-            // Bandera útil para el frontend
-            is_local: source === 'local'
+            is_local: source === 'local' // Bandera útil
         };
     }
 
     async cacheBook(bookData) {
+        // Aseguramos que guardamos el ID correcto
         const bookToSave = {
             ...bookData,
-            google_id: bookData.external_id
+            // Si viene del normalizador, ya trae 'external_id', pero nos aseguramos
+            external_id: bookData.external_id || bookData.google_id
         };
         return await BookModel.create(bookToSave);
     }
-    
-    async getBookFeed(externalId) {
-        const localBook = await BookModel.findByExternalId(externalId); 
-        
-        if (!localBook) {
-            return [];
-        }
 
+    async getBookFeed(externalId) {
+        const localBook = await BookModel.findByExternalId(externalId);
+        if (!localBook) return [];
         return await ReadingModel.getPublicFeedByBookId(localBook.id);
     }
 

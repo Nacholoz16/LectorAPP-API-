@@ -6,35 +6,30 @@ class ReadingService {
     async registerReading(userId, inputData) {
         const { bookData, logData } = inputData;
 
-        // PASO 1: Gestión del Libro (Caché)
-        // Usamos el método create de BookModel que ya maneja "si existe, devuelve ID, si no, crea"
-        // Asegúrate que tu BookModel.create use 'external_id' como definimos en el paso anterior.
+        // 1. Guardar/Recuperar Libro
         const bookId = await BookModel.create({
-            external_id: bookData.external_id, // "/works/OL..."
+            external_id: bookData.external_id,
             title: bookData.title,
-            authors: bookData.authors,
+            authors: bookData.authors, // El frontend ya lo enviará bien
             cover_url: bookData.cover_url,
             isbn: bookData.isbn,
-            page_count: bookData.page_count
+            page_count: bookData.page_count,
+            published_year: bookData.published_year // <--- Guardamos el año
         });
 
-        // PASO 2: Evitar duplicados (Opcional: podrías permitir relecturas)
+        // 2. Validar duplicados
         const existingLog = await ReadingModel.findByUserAndBook(userId, bookId);
-        if (existingLog) {
-            throw new Error('Ya tienes este libro registrado en tu biblioteca.');
-        }
+        if (existingLog) throw new Error('Ya tienes este libro registrado.');
 
-        // PASO 3: Cálculo automático de duración
+        // 3. Duración
         let calculatedDuration = logData.duration_days;
-
         if (logData.start_date && logData.finish_date && !calculatedDuration) {
             const start = new Date(logData.start_date);
             const end = new Date(logData.finish_date);
-            const diffTime = Math.abs(end - start);
-            calculatedDuration = Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
+            calculatedDuration = Math.ceil(Math.abs(end - start) / (1000 * 60 * 60 * 24)); 
         }
 
-        // PASO 4: Guardar el Log
+        // 4. Guardar Log
         const logId = await ReadingModel.create({
             user_id: userId,
             book_id: bookId,
@@ -50,20 +45,16 @@ class ReadingService {
         return { logId, message: 'Lectura registrada correctamente' };
     }
 
-    // ...
-async getRecentReadings() {
+    async getRecentReadings() {
         const rawFeed = await ReadingModel.getGlobalFeed(20);
         
-        // Mapeamos para corregir "author" -> "authors" y asegurar consistencia
+        // Estandarización final antes de enviar al frontend
         return rawFeed.map(item => ({
             ...item,
-            // Si viene 'author', lo copiamos a 'authors'. Si ya tiene 'authors', lo dejamos.
-            authors: item.authors || item.author || 'Desconocido',
-            // Aseguramos que el ID externo sea consistente
-            external_id: item.external_id || item.google_id
+            authors: item.authors || item.author || 'Desconocido', // Unificación
+            external_id: item.external_id // Ya viene bien del modelo
         }));
     }
-    // ...
 }
 
 module.exports = new ReadingService();
