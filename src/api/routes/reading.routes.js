@@ -7,4 +7,5 @@ const { protect } = require('../middlewares/auth.middleware');
 router.post('/', protect, ReadingController.create);
 router.get('/feed', protect, ReadingController.getGlobalFeed);
 
+
 module.exports = router;

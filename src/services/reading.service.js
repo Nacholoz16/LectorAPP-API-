@@ -51,8 +51,17 @@ class ReadingService {
     }
 
     // ...
-    async getRecentReadings() {
-        return await ReadingModel.getGlobalFeed(20);
+async getRecentReadings() {
+        const rawFeed = await ReadingModel.getGlobalFeed(20);
+        
+        // Mapeamos para corregir "author" -> "authors" y asegurar consistencia
+        return rawFeed.map(item => ({
+            ...item,
+            // Si viene 'author', lo copiamos a 'authors'. Si ya tiene 'authors', lo dejamos.
+            authors: item.authors || item.author || 'Desconocido',
+            // Aseguramos que el ID externo sea consistente
+            external_id: item.external_id || item.google_id
+        }));
     }
     // ...
 }

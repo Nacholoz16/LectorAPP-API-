@@ -84,6 +84,8 @@ class ReadingModel {
             SELECT 
                 r.id, r.status, r.rating, r.review_text, r.created_at, r.duration_days,
                 b.title, b.author, b.cover_url, b.external_id,
+                -- AGREGAMOS ESTOS 3 PARA QUE EL HOME TENGA LA MISMA DATA QUE EL SEARCH
+                b.isbn, b.page_count, b.published_year, 
                 u.username, u.avatar_url
             FROM reading_logs r
             JOIN books b ON r.book_id = b.id

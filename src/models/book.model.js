@@ -28,7 +28,8 @@ class BookModel {
                 bookData.title,
                 bookData.authors || 'Desconocido',
                 bookData.cover_url || null, 
-                bookData.page_count
+                bookData.page_count || null,
+                bookData.published_year || null
             ]
         );
         return result.insertId;
