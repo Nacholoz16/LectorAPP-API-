@@ -8,10 +8,16 @@ const registerSchema = z.object({
   password: z.string().min(6) // Mínimo 6 caracteres
 });
 
-const loginSchema = z.object({
-  email: z.string().email(),
-  password: z.string()
-});
+const loginSchema = z.union([
+  z.object({
+    email: z.string().email(),
+    password: z.string()
+  }),
+  z.object({
+    username: z.string().min(3).max(30),
+    password: z.string()
+  })
+]);
 
 // Métodos del Controlador
 const register = async (req, res, next) => {
@@ -41,8 +47,32 @@ const register = async (req, res, next) => {
   }
 };
 
+const logout = async (req, res, next) => {
+  try {
+    const authHeader = req.headers.authorization || '';
+    let token = null;
+
+    if (authHeader.startsWith('Bearer ')) token = authHeader.slice(7);
+    else if (req.body && req.body.token) token = req.body.token;
+    else if (req.cookies && req.cookies.token) token = req.cookies.token;
+
+    if (!token) return res.status(400).json({ error: 'Token requerido' });
+
+    await AuthService.logout(token);
+
+    res.json({ message: 'Logout exitoso', success: true });
+  } catch (error) {
+    if (error.message === 'Token inválido') {
+      return res.status(401).json({ error: error.message });
+    }
+    next(error);
+  }
+};
+
 const login = async (req, res, next) => {
   try {
+    console.log('Login request body:', req.body);
+
     const data = loginSchema.parse(req.body);
     const result = await AuthService.loginUser(data);
 
@@ -58,4 +88,4 @@ const login = async (req, res, next) => {
   }
 };
 
-module.exports = { register, login };
+module.exports = { register, login, logout };

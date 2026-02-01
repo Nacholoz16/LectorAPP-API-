@@ -27,25 +27,58 @@ class AuthService {
     };
   }
 
-  async loginUser({ email, password }) {
-    // 1. Buscar usuario
-    const user = await UserModel.findByEmail(email);
-    if (!user) throw new Error('Credenciales inválidas');
+async loginUser({ email, username, password }) {
+  if (!email && !username) {
+    throw new Error('Email o username requerido');
+  }
 
-    // 2. Verificar password
-    const validPass = await bcrypt.compare(password, user.password_hash);
-    if (!validPass) throw new Error('Credenciales inválidas');
+  let user;
 
-    // 3. Generar respuesta
-    return {
-      user: { 
-        id: user.id, 
-        username: user.username, 
-        email: user.email,
-        avatar: user.avatar_url 
-      },
-      token: this.generateToken(user.id)
-    };
+  if (email) {
+    user = await UserModel.findByEmail(email.toLowerCase().trim());
+  } else {
+    user = await UserModel.findByUsername(username.trim());
+  }
+
+  if (!user) {
+    throw new Error('Credenciales inválidas');
+  }
+
+  const validPass = await bcrypt.compare(password, user.password_hash);
+  if (!validPass) {
+    throw new Error('Credenciales inválidas');
+  }
+
+  return {
+    user: {
+      id: user.id,
+      username: user.username,
+      email: user.email,
+      avatar: user.avatar_url
+    },
+    token: this.generateToken(user.id)
+  };
+}
+
+  async logout(token) {
+    if (!token) throw new Error('Token requerido');
+
+    const decoded = jwt.decode(token);
+    if (!decoded || !decoded.exp) throw new Error('Token inválido');
+
+    // Inicializa blacklist en memoria si no existe
+    if (!this._tokenBlacklist) this._tokenBlacklist = new Map();
+
+    const expiresAt = decoded.exp * 1000;
+    this._tokenBlacklist.set(token, expiresAt);
+
+    // Limpieza automática cuando el token expire
+    const ttl = Math.max(0, expiresAt - Date.now());
+    setTimeout(() => {
+      if (this._tokenBlacklist) this._tokenBlacklist.delete(token);
+    }, ttl);
+
+    return { success: true };
   }
 
   // Helper para tokens
