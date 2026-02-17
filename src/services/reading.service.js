@@ -55,6 +55,39 @@ class ReadingService {
             external_id: item.external_id // Ya viene bien del modelo
         }));
     }
+
+
+
+    async updateReading(userId, logId, logData) {
+        // Recalcular duración si vienen fechas (misma lógica que en create)
+        let calculatedDuration = logData.duration_days;
+        if (logData.start_date && logData.finish_date) {
+            const start = new Date(logData.start_date);
+            const end = new Date(logData.finish_date);
+            calculatedDuration = Math.ceil(Math.abs(end - start) / (1000 * 60 * 60 * 24)); 
+        }
+
+        const result = await ReadingModel.update(logId, userId, {
+            ...logData,
+            duration_days: calculatedDuration || 0
+        });
+
+        if (result.affectedRows === 0) {
+            throw new Error('La lectura no existe o no tienes permiso para editarla');
+        }
+
+        return { message: 'Opinión actualizada correctamente' };
+    }
+
+    async deleteReading(userId, logId) {
+        const result = await ReadingModel.delete(logId, userId);
+
+        if (result.affectedRows === 0) {
+            throw new Error('La lectura no existe o no tienes permiso para eliminarla');
+        }
+
+        return { message: 'Opinión eliminada correctamente' };
+    }
 }
 
 module.exports = new ReadingService();

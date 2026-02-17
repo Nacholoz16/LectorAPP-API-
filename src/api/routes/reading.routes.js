@@ -5,6 +5,7 @@ const { protect } = require('../middlewares/auth.middleware');
 
 router.post('/', protect, ReadingController.create);
 router.get('/feed', protect, ReadingController.getGlobalFeed);
-router.get('/my-library', protect, ReadingController.getMyLibrary); // <--- Nueva Ruta
-
+router.get('/my-library', protect, ReadingController.getMyLibrary); 
+router.put('/:id', protect, ReadingController.update);
+router.delete('/:id', protect, ReadingController.delete);
 module.exports = router;

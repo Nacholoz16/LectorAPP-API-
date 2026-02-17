@@ -35,6 +35,34 @@ class ReadingController {
             res.status(500).json({ message: 'Error al obtener biblioteca' });
         }
     }
+
+    // --- AGREGAR ESTOS MÉTODOS ---
+
+    async update(req, res) {
+        try {
+            const { id } = req.params; // ID del log de lectura
+            const result = await ReadingService.updateReading(req.user.id, id, req.body);
+            res.json(result);
+        } catch (error) {
+            if (error.message.includes('no tienes permiso')) {
+                return res.status(403).json({ error: error.message });
+            }
+            res.status(400).json({ message: error.message });
+        }
+    }
+
+    async delete(req, res) {
+        try {
+            const { id } = req.params; // ID del log de lectura
+            const result = await ReadingService.deleteReading(req.user.id, id);
+            res.json(result);
+        } catch (error) {
+            if (error.message.includes('no tienes permiso')) {
+                return res.status(403).json({ error: error.message });
+            }
+            res.status(400).json({ message: error.message });
+        }
+    }
 }
 
 module.exports = new ReadingController();

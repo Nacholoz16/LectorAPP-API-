@@ -81,6 +81,35 @@ class ReadingModel {
         `, [limit.toString()]);
         return rows;
     }
+
+    static async update(id, userId, data) {
+        const [result] = await db.execute(
+            `UPDATE reading_logs 
+             SET status = ?, rating = ?, start_date = ?, finish_date = ?, duration_days = ?, review_text = ?, is_log_public = ?
+             WHERE id = ? AND user_id = ?`,
+            [
+                data.status, 
+                data.rating, 
+                data.start_date || null, 
+                data.finish_date || null, 
+                data.duration_days, 
+                data.review_text, 
+                data.is_log_public, 
+                id, 
+                userId
+            ]
+        );
+        return result;
+    }
+
+    // Eliminar una lectura (Validando propiedad con user_id)
+    static async delete(id, userId) {
+        const [result] = await db.execute(
+            'DELETE FROM reading_logs WHERE id = ? AND user_id = ?',
+            [id, userId]
+        );
+        return result;
+    }
 }
 
 module.exports = ReadingModel;
