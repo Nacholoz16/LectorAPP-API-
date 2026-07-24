@@ -39,21 +39,29 @@ class ReadingService {
             finish_date: logData.finish_date || null,
             duration_days: calculatedDuration || 0,
             review_text: logData.review_text,
-            is_log_public: logData.is_log_public
+            is_log_public: logData.is_log_public,
+            current_page: logData.current_page || 0
         });
 
         return { logId, message: 'Lectura registrada correctamente' };
     }
 
-    async getRecentReadings() {
-        const rawFeed = await ReadingModel.getGlobalFeed(20);
+    async getRecentReadings(page = 1, limit = 10, currentUserId = null) {
+        const offset = (Math.max(1, parseInt(page)) - 1) * parseInt(limit);
+        const rawFeed = await ReadingModel.getGlobalFeed(parseInt(limit), offset, currentUserId);
         
         // Estandarización final antes de enviar al frontend
         return rawFeed.map(item => ({
             ...item,
-            authors: item.authors || item.author || 'Desconocido', // Unificación
-            external_id: item.external_id // Ya viene bien del modelo
+            authors: item.authors || item.author || 'Desconocido',
+            external_id: item.external_id,
+            likes_count: item.likes_count ? parseInt(item.likes_count) : 0,
+            has_liked: Boolean(item.has_liked)
         }));
+    }
+
+    async toggleLike(userId, readingLogId) {
+        return await ReadingModel.toggleLike(userId, readingLogId);
     }
 
 

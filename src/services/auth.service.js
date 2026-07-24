@@ -1,6 +1,7 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const UserModel = require('../models/user.model');
+const db = require('../config/db');
 
 class AuthService {
   
@@ -66,17 +67,18 @@ async loginUser({ email, username, password }) {
     const decoded = jwt.decode(token);
     if (!decoded || !decoded.exp) throw new Error('Token inválido');
 
-    // Inicializa blacklist en memoria si no existe
-    if (!this._tokenBlacklist) this._tokenBlacklist = new Map();
-
-    const expiresAt = decoded.exp * 1000;
-    this._tokenBlacklist.set(token, expiresAt);
-
-    // Limpieza automática cuando el token expire
-    const ttl = Math.max(0, expiresAt - Date.now());
-    setTimeout(() => {
-      if (this._tokenBlacklist) this._tokenBlacklist.delete(token);
-    }, ttl);
+    // Convertir timestamp a fecha MySQL (YYYY-MM-DD HH:MM:SS)
+    const expiresAtDate = new Date(decoded.exp * 1000).toISOString().slice(0, 19).replace('T', ' ');
+    
+    // Insertar token en blacklist
+    try {
+        await db.execute(
+            'INSERT IGNORE INTO token_blacklist (token, expires_at) VALUES (?, ?)',
+            [token, expiresAtDate]
+        );
+    } catch (e) {
+        console.error('Error insertando en blacklist:', e);
+    }
 
     return { success: true };
   }

@@ -9,9 +9,36 @@ const app = express();
 
 // Middlewares Globales
 app.use(helmet()); // Seguridad HTTP headers
-app.use(cors()); // Permitir peticiones desde Ionic/Angular
-app.use(express.json()); // Parsear body JSON
+app.use(cors({
+  origin: [
+    'https://nacholoz3d.cl',
+    'https://www.nacholoz3d.cl',
+    'http://localhost:3000',
+    'http://localhost:4200',
+  ],
+  credentials: true,
+})); // Permitir solo orígenes conocidos
+app.use(express.json({ limit: '1mb' })); // Parsear body JSON con límite de tamaño
 app.use(morgan('dev')); // Logger de peticiones en consola
+
+// Logger detallado personalizado
+app.use((req, res, next) => {
+    const timestamp = new Date().toISOString();
+    console.log(`\n[API REQUEST ${timestamp}] ${req.method} ${req.originalUrl}`);
+    if (Object.keys(req.query).length > 0) {
+        console.log(`  Query:`, JSON.stringify(req.query));
+    }
+    if (req.body && Object.keys(req.body).length > 0) {
+        console.log(`  Body:`, JSON.stringify(req.body));
+    }
+
+    const oldSend = res.send;
+    res.send = function (data) {
+        console.log(`[API RESPONSE ${timestamp}] Status: ${res.statusCode}`);
+        return oldSend.apply(res, arguments);
+    };
+    next();
+});
 
 
 

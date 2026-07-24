@@ -3,42 +3,52 @@ const ReadingModel = require('../models/reading.model');
 
 class UserService {
     
-    // Obtener perfil completo (Info + Biblioteca filtrada)
+    // Obtener perfil (Info básica)
     async getProfile(targetUsername, requestingUserId) {
         // 1. Buscar al usuario objetivo
         const targetUser = await UserModel.findByUsername(targetUsername);
         if (!targetUser) throw new Error('Usuario no encontrado');
 
-        // Datos básicos que SIEMPRE mostramos (Username, Avatar, Bio)
-        // OJO: Nunca devolvemos el email ni password aquí.
+        let libraryData = [];
+        if (requestingUserId === targetUser.id || targetUser.is_profile_public) {
+            libraryData = await this.getLibrary(targetUsername, requestingUserId, 1, 10);
+        }
+
         const profileData = {
             username: targetUser.username,
             bio: targetUser.bio,
             avatar_url: targetUser.avatar_url,
-            is_profile_public: !!targetUser.is_profile_public, // Convertir a booleano real
-            is_own_profile: false,
-            library: []
+            is_profile_public: !!targetUser.is_profile_public,
+            is_own_profile: requestingUserId === targetUser.id,
+            library: libraryData
         };
 
-        // 2. ¿Es el dueño consultando su propio perfil?
-        if (requestingUserId === targetUser.id) {
-            profileData.is_own_profile = true;
-            // El dueño ve TODO
-            profileData.library = await ReadingModel.getAllByUserId(targetUser.id);
-            return profileData;
+        if (requestingUserId !== targetUser.id && !targetUser.is_profile_public) {
+            profileData.is_private_lock = true;
         }
 
-        // 3. Si NO es el dueño... revisamos la privacidad global
-        if (!targetUser.is_profile_public) {
-            // Perfil PRIVADO: Devolvemos biblioteca vacía y un flag
-            // El frontend mostrará el candado.
-            return { ...profileData, is_private_lock: true };
-        }
-
-        // 4. Perfil PÚBLICO: Devolvemos solo los libros públicos
-        profileData.library = await ReadingModel.getPublicByUserId(targetUser.id);
-        
         return profileData;
+    }
+
+    // Obtener biblioteca paginada del usuario
+    async getLibrary(targetUsername, requestingUserId, page = 1, limit = 10) {
+        const targetUser = await UserModel.findByUsername(targetUsername);
+        if (!targetUser) throw new Error('Usuario no encontrado');
+
+        const offset = (Math.max(1, parseInt(page)) - 1) * parseInt(limit);
+
+        // 1. Si es el dueño, ve todo (público y privado)
+        if (requestingUserId === targetUser.id) {
+            return await ReadingModel.getAllByUserId(targetUser.id, parseInt(limit), offset);
+        }
+
+        // 2. Si no es el dueño y el perfil es privado
+        if (!targetUser.is_profile_public) {
+            return [];
+        }
+
+        // 3. Perfil público: solo libros públicos
+        return await ReadingModel.getPublicByUserId(targetUser.id, parseInt(limit), offset);
     }
 }
 
