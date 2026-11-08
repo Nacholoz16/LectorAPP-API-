@@ -27,7 +27,8 @@ echo ">> Validando docker-compose.yml"
 docker compose config -q
 
 echo ">> Recreando contenedor de la API"
-docker compose up -d --force-recreate --renew-anon-volumes api
+# --no-deps: no tocar lectorDB aunque api dependa de ella (--force-recreate la reiniciaría).
+docker compose up -d --no-deps --force-recreate --renew-anon-volumes api
 
 echo ">> Esperando /api/health (máx. ${HEALTH_TIMEOUT_S}s)"
 elapsed=0
