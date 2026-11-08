@@ -575,7 +575,18 @@ describe('API E2E', () => {
             expect(payload.exp - payload.iat).toBe(30 * 60);
         });
 
-        test('refresh rota: entrega tokens nuevos y el acceso nuevo funciona', async () => {
+        test('dos logins seguidos dan tokens distintos (cerrar uno no cierra el otro)', async () => {
+            const [a, b] = await Promise.all([
+                login('otro_user', 'password123'),
+                login('otro_user', 'password123'),
+            ]);
+            expect(a.body.token).not.toBe(b.body.token);
+            await request(app).post('/api/auth/logout').set(auth(a.body.token));
+            const still = await request(app).get('/api/readings/feed').set(auth(b.body.token));
+            expect(still.statusCode).toBe(200);
+        });
+
+                test('refresh rota: entrega tokens nuevos y el acceso nuevo funciona', async () => {
             const first = await login('otro_user', 'password123');
             const res = await refresh(first.body.refresh_token);
             expect(res.statusCode).toBe(200);

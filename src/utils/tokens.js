@@ -6,10 +6,15 @@ const JWT_ALGORITHM = 'HS256';
 const JWT_EXPIRES_IN = '30m';
 const REFRESH_TOKEN_TTL_DAYS = 60;
 
+/**
+ * `jwtid` (jti) aleatorio: sin él, dos tokens del mismo usuario emitidos en el mismo segundo
+ * serían idénticos, y revocar uno (logout, blacklist por hash) revocaría también el otro.
+ */
 const signToken = (userId) =>
     jwt.sign({ id: userId }, process.env.JWT_SECRET, {
         algorithm: JWT_ALGORITHM,
         expiresIn: JWT_EXPIRES_IN,
+        jwtid: crypto.randomUUID(),
     });
 
 /** Verifica firma y expiración. Fija el algoritmo para evitar ataques de confusión de algoritmo. */
