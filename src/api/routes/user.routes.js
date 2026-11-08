@@ -6,6 +6,9 @@ const { protect } = require('../middlewares/auth.middleware');
 // POST /api/users/goal (Fijar meta de lectura)
 router.post('/goal', protect, UserController.setGoal);
 
+// PUT /api/users/privacy (Actualizar ajustes de privacidad)
+router.put('/privacy', protect, UserController.updatePrivacy);
+
 // GET /api/users/:username/library (Biblioteca paginada) - Debe ir ANTES de /:username
 router.get('/:username/library', protect, UserController.getLibrary);
 

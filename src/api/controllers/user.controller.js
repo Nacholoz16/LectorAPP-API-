@@ -38,12 +38,13 @@ const ReadingModel = require('../../models/reading.model');
 const getStats = async (req, res, next) => {
     try {
         const { username } = req.params;
-        const user = await UserModel.findByUsername(username);
-        if (!user) return res.status(404).json({ error: 'Usuario no encontrado' });
-
-        const stats = await ReadingModel.getStatsByUserId(user.id);
+        const requestingUserId = req.user.id;
+        const stats = await UserService.getStats(username, requestingUserId);
         res.json(stats);
     } catch (error) {
+        if (error.message === 'Usuario no encontrado') {
+            return res.status(404).json({ error: error.message });
+        }
         next(error);
     }
 };
@@ -61,4 +62,17 @@ const setGoal = async (req, res, next) => {
     }
 };
 
-module.exports = { getProfile, getLibrary, getStats, setGoal };
+const updatePrivacy = async (req, res, next) => {
+    try {
+        const { is_profile_public, are_stats_public } = req.body;
+        const result = await UserService.updatePrivacySettings(req.user.id, {
+            is_profile_public,
+            are_stats_public
+        });
+        res.json(result);
+    } catch (error) {
+        next(error);
+    }
+};
+
+module.exports = { getProfile, getLibrary, getStats, setGoal, updatePrivacy };

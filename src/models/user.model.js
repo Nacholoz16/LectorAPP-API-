@@ -32,10 +32,23 @@ class UserModel {
   // Buscar por ID (útil para el middleware de auth)
   static async findById(id) {
     const [rows] = await db.execute(
-      'SELECT id, username, email, avatar_url, is_profile_public FROM users WHERE id = ?',
+      'SELECT id, username, email, avatar_url, is_profile_public, are_stats_public FROM users WHERE id = ?',
       [id]
     );
     return rows[0];
+  }
+
+  // Actualizar preferencias de privacidad
+  static async updatePrivacy(id, { is_profile_public, are_stats_public }) {
+    await db.execute(
+      `UPDATE users 
+       SET is_profile_public = COALESCE(?, is_profile_public), 
+           are_stats_public = COALESCE(?, are_stats_public) 
+       WHERE id = ?`,
+      [is_profile_public !== undefined ? (is_profile_public ? 1 : 0) : null,
+       are_stats_public !== undefined ? (are_stats_public ? 1 : 0) : null,
+       id]
+    );
   }
 }
 

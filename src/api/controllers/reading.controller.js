@@ -76,6 +76,12 @@ class ReadingController {
             const result = await ReadingService.toggleLike(req.user.id, id);
             res.json(result);
         } catch (error) {
+            if (error.message.includes('No tienes permiso')) {
+                return res.status(403).json({ error: error.message });
+            }
+            if (error.message.includes('no encontrado')) {
+                return res.status(404).json({ error: error.message });
+            }
             res.status(400).json({ message: error.message });
         }
     }
@@ -93,6 +99,9 @@ class ReadingController {
             );
             res.json(result);
         } catch (error) {
+            if (error.message.includes('No tienes permiso')) {
+                return res.status(403).json({ error: error.message });
+            }
             res.status(400).json({ message: error.message });
         }
     }

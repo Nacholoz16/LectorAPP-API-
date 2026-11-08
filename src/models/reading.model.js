@@ -60,7 +60,7 @@ class ReadingModel {
         const activeUserId = currentUserId || 0;
         const [rows] = await db.execute(`
             SELECT 
-                r.id, r.status, r.rating, r.duration_days, r.review_text, r.current_page, r.updated_at,
+                r.id, r.status, r.rating, r.duration_days, r.review_text, r.current_page, r.updated_at, r.is_log_public,
                 b.title, b.author, b.cover_url, b.external_id, b.page_count,
                 COUNT(rl.id) AS likes_count,
                 MAX(CASE WHEN rl.user_id = ? THEN 1 ELSE 0 END) AS has_liked
@@ -100,6 +100,15 @@ class ReadingModel {
 
     // 5. DAR O QUITAR LIKE A UNA LECTURA
     static async toggleLike(userId, readingLogId) {
+        const [logs] = await db.execute(
+            'SELECT user_id, is_log_public FROM reading_logs WHERE id = ?',
+            [readingLogId]
+        );
+        if (!logs.length) throw new Error('Registro no encontrado');
+        if (logs[0].user_id !== userId && !logs[0].is_log_public) {
+            throw new Error('No tienes permiso para interactuar con esta lectura');
+        }
+
         const [existing] = await db.execute(
             'SELECT id FROM reading_likes WHERE user_id = ? AND reading_log_id = ?',
             [userId, readingLogId]
@@ -160,6 +169,11 @@ class ReadingModel {
 
     // 6. REGISTRAR SESIÓN DE LECTURA (Cronómetro / Minutos)
     static async recordSession(userId, readingLogId, durationMinutes, pagesRead, newCurrentPage) {
+        const [logs] = await db.execute('SELECT user_id FROM reading_logs WHERE id = ?', [readingLogId]);
+        if (!logs.length || logs[0].user_id !== userId) {
+            throw new Error('No tienes permiso para registrar sesiones en esta lectura');
+        }
+
         await db.execute(
             'INSERT INTO reading_sessions (user_id, reading_log_id, duration_minutes, pages_read) VALUES (?, ?, ?, ?)',
             [userId, readingLogId, durationMinutes, pagesRead]
@@ -175,19 +189,21 @@ class ReadingModel {
     }
 
     // 7. OBTENER ESTADÍSTICAS DEL USUARIO (2 queries paralelas en vez de 7 secuenciales)
-    static async getStatsByUserId(userId) {
+    static async getStatsByUserId(userId, isVisitor = false) {
         const currentYear = new Date().getFullYear();
 
         // Query 1: Todo lo de sesiones de lectura (tiempo + páginas)
-        const sessionQuery = db.execute(
-            `SELECT 
-                COALESCE(SUM(duration_minutes), 0) as total_minutes,
-                COALESCE(SUM(pages_read), 0) as total_pages_sessions
-            FROM reading_sessions WHERE user_id = ?`,
-            [userId]
-        );
+        const sessionQueryStr = isVisitor
+            ? `SELECT COALESCE(SUM(rs.duration_minutes), 0) as total_minutes, COALESCE(SUM(rs.pages_read), 0) as total_pages_sessions 
+               FROM reading_sessions rs JOIN reading_logs rl ON rs.reading_log_id = rl.id 
+               WHERE rs.user_id = ? AND rl.is_log_public = 1`
+            : `SELECT COALESCE(SUM(duration_minutes), 0) as total_minutes, COALESCE(SUM(pages_read), 0) as total_pages_sessions 
+               FROM reading_sessions WHERE user_id = ?`;
+
+        const sessionQuery = db.execute(sessionQueryStr, [userId]);
 
         // Query 2: Todo lo de reading_logs + meta anual (en un solo JOIN)
+        const logsFilter = isVisitor ? `AND rl.is_log_public = 1` : ``;
         const logsQuery = db.execute(
             `SELECT 
                 COALESCE(SUM(rl.current_page), 0) as log_pages,
@@ -199,14 +215,25 @@ class ReadingModel {
                 MAX(g.target_books) as target_books
             FROM reading_logs rl
             LEFT JOIN reading_goals g ON g.user_id = rl.user_id AND g.year = ?
-            WHERE rl.user_id = ?`,
+            WHERE rl.user_id = ? ${logsFilter}`,
             [currentYear, currentYear, currentYear, userId]
         );
 
-        // Ejecutar ambas queries en paralelo
-        const [[sessionRows], [logsRows]] = await Promise.all([sessionQuery, logsQuery]);
+        // Query 3: Total de likes recibidos en sus logs
+        const likesFilter = isVisitor ? `AND rl.is_log_public = 1` : ``;
+        const likesQuery = db.execute(
+            `SELECT COUNT(*) as total_likes 
+             FROM reading_likes rlk 
+             JOIN reading_logs rl ON rlk.reading_log_id = rl.id 
+             WHERE rl.user_id = ? ${likesFilter}`,
+            [userId]
+        );
+
+        // Ejecutar las 3 queries en paralelo
+        const [[sessionRows], [logsRows], [likesRows]] = await Promise.all([sessionQuery, logsQuery, likesQuery]);
         const s = sessionRows[0];
         const l = logsRows[0];
+        const k = likesRows[0];
 
         const totalPages = Math.max(
             parseInt(s.total_pages_sessions || 0),
@@ -220,6 +247,7 @@ class ReadingModel {
             finished_books_this_year: parseInt(l.finished_books_this_year || 0),
             avg_rating: l.avg_rating ? parseFloat(l.avg_rating).toFixed(1) : '0.0',
             target_books_this_year: l.target_books ?? 10,
+            total_likes: parseInt(k.total_likes || 0),
             year: currentYear
         };
     }
