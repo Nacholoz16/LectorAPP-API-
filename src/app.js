@@ -38,6 +38,8 @@ app.use(express.json({ limit: '100kb' }));
 // Log de peticiones estructurado. Solo método, URL, status y tiempo: nunca bodies ni headers.
 app.use(pinoHttp({
     logger,
+    // El healthcheck de Docker llama a /api/health cada 30 s: no llenar el log con eso.
+    autoLogging: { ignore: (req) => req.url === '/api/health' },
     serializers: {
         req: (req) => ({ id: req.id, method: req.method, url: req.url }),
         res: (res) => ({ statusCode: res.statusCode }),
