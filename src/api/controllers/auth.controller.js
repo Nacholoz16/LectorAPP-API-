@@ -18,4 +18,15 @@ const logout = async (req, res) => {
     res.json({ message: 'Logout exitoso', success: true });
 };
 
-module.exports = { register, login, logout };
+const forgotPassword = async (req, res) => {
+    await AuthService.requestPasswordReset(req.body);
+    // Misma respuesta exista o no la cuenta (no se revela qué emails están registrados).
+    res.json({ message: 'Si el email está registrado, te enviamos un código. Revisa también la carpeta de spam.' });
+};
+
+const resetPassword = async (req, res) => {
+    const result = await AuthService.resetPassword(req.body);
+    res.json({ message: 'Contraseña actualizada', ...result });
+};
+
+module.exports = { register, login, logout, forgotPassword, resetPassword };

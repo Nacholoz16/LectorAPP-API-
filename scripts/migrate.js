@@ -10,9 +10,20 @@
  * 4. Índice en token_blacklist(expires_at) para la limpieza periódica,
  *    e índice (is_log_public, id) para el feed paginado por cursor.
  * 5. Avisa de usernames que no cumplen el nuevo formato (no los modifica).
+ * 6. Recuperación de contraseña: tabla password_resets y users.password_changed_at
+ *    (segundos Unix; los JWT emitidos antes de ese momento dejan de valer).
  */
 require('dotenv').config({ quiet: true });
 const db = require('../src/config/db');
+
+const columnExists = async (table, column) => {
+    const [rows] = await db.query(
+        `SELECT 1 FROM information_schema.columns
+         WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ? LIMIT 1`,
+        [table, column]
+    );
+    return rows.length > 0;
+};
 
 const indexExists = async (table, indexName) => {
     const [rows] = await db.query(
@@ -78,6 +89,26 @@ async function migrate() {
         console.table(badUsernames);
     } else {
         console.log('[5] Todos los usernames cumplen el formato');
+    }
+
+    // 6. Recuperación de contraseña
+    await db.query(`CREATE TABLE IF NOT EXISTS password_resets (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id INT NOT NULL,
+      code_hash CHAR(64) NOT NULL,
+      expires_at DATETIME NOT NULL,
+      attempts TINYINT UNSIGNED NOT NULL DEFAULT 0,
+      used_at DATETIME NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_resets_user (user_id, used_at),
+      CONSTRAINT fk_resets_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )`);
+    console.log('[6] Tabla password_resets lista');
+    if (await columnExists('users', 'password_changed_at')) {
+        console.log('[6] users.password_changed_at ya existe');
+    } else {
+        await db.query('ALTER TABLE users ADD COLUMN password_changed_at BIGINT UNSIGNED NULL');
+        console.log('[6] users.password_changed_at creada');
     }
 }
 

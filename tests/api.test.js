@@ -1,4 +1,5 @@
 const request = require('supertest');
+const { outbox } = require('../src/utils/mailer');
 const app = require('../src/app');
 const db = require('../src/config/db');
 
@@ -32,6 +33,7 @@ const BOOK_2 = { external_id: '/works/OL2W', title: 'Libro Privado', authors: 'O
 beforeAll(async () => {
     // La BD de test no tiene FKs: limpiar todas las tablas explícitamente.
     for (const table of [
+        'password_resets',
         'token_blacklist',
         'reading_likes',
         'reading_sessions',
@@ -447,6 +449,111 @@ describe('API E2E', () => {
             const res = await request(app).get('/api/no-existe');
             expect(res.statusCode).toBe(404);
             expect(res.body.code).toBe('NOT_FOUND');
+        });
+    });
+
+    // ------------------------------------------------------------------
+    // Va al final: invalida ownerToken al cambiar la contraseña.
+    describe('Recuperar contraseña', () => {
+        const SAME_MESSAGE = 'Si el email está registrado, te enviamos un código. Revisa también la carpeta de spam.';
+        const lastCodeFor = (email) => {
+            const mail = [...outbox].reverse().find((m) => m.to === email);
+            return mail && mail.text.match(/\b(\d{6})\b/)[1];
+        };
+        const skipCooldown = () =>
+            db.query('UPDATE password_resets SET created_at = created_at - INTERVAL 2 MINUTE');
+
+        test('email no registrado: misma respuesta y no se envía nada', async () => {
+            const before = outbox.length;
+            const res = await request(app)
+                .post('/api/auth/forgot-password')
+                .send({ email: 'nadie@jest.com' });
+            expect(res.statusCode).toBe(200);
+            expect(res.body.message).toBe(SAME_MESSAGE);
+            expect(outbox.length).toBe(before);
+        });
+
+        test('email registrado: envía un código de 6 dígitos (normaliza mayúsculas)', async () => {
+            const res = await request(app)
+                .post('/api/auth/forgot-password')
+                .send({ email: ' TEST@jest.com ' });
+            expect(res.statusCode).toBe(200);
+            expect(res.body.message).toBe(SAME_MESSAGE);
+            expect(lastCodeFor('test@jest.com')).toMatch(/^\d{6}$/);
+        });
+
+        test('no reenvía otro código antes de 60 s', async () => {
+            const before = outbox.length;
+            await request(app).post('/api/auth/forgot-password').send({ email: 'test@jest.com' });
+            expect(outbox.length).toBe(before);
+        });
+
+        test('código incorrecto → 400 sin cambiar nada', async () => {
+            const code = lastCodeFor('test@jest.com');
+            const wrong = code === '000000' ? '111111' : '000000';
+            const res = await request(app)
+                .post('/api/auth/reset-password')
+                .send({ email: 'test@jest.com', code: wrong, password: 'nuevaClave123' });
+            expect(res.statusCode).toBe(400);
+            expect(res.body.code).toBe('VALIDATION_ERROR');
+        });
+
+        test('formato inválido de código o contraseña corta → 400', async () => {
+            const res = await request(app)
+                .post('/api/auth/reset-password')
+                .send({ email: 'test@jest.com', code: '12ab', password: 'corta' });
+            expect(res.statusCode).toBe(400);
+            expect(res.body.code).toBe('VALIDATION_ERROR');
+        });
+
+        test('código correcto: cambia la contraseña, devuelve sesión y cierra las anteriores', async () => {
+            const code = lastCodeFor('test@jest.com');
+            const res = await request(app)
+                .post('/api/auth/reset-password')
+                .send({ email: 'test@jest.com', code, password: 'nuevaClave123' });
+            expect(res.statusCode).toBe(200);
+            expect(res.body).toHaveProperty('token');
+            expect(res.body.user.username).toBe('tester_jest');
+
+            // La sesión nueva funciona…
+            const fresh = await request(app).get('/api/readings/feed').set(auth(res.body.token));
+            expect(fresh.statusCode).toBe(200);
+            // …y la anterior (emitida antes del cambio) ya no.
+            const old = await request(app).get('/api/readings/feed').set(auth(ownerToken));
+            expect(old.statusCode).toBe(401);
+
+            const oldPass = await request(app)
+                .post('/api/auth/login')
+                .send({ username: 'tester_jest', password: 'password123' });
+            expect(oldPass.statusCode).toBe(401);
+            const newPass = await request(app)
+                .post('/api/auth/login')
+                .send({ username: 'tester_jest', password: 'nuevaClave123' });
+            expect(newPass.statusCode).toBe(200);
+        });
+
+        test('un código ya usado no sirve otra vez', async () => {
+            const code = lastCodeFor('test@jest.com');
+            const res = await request(app)
+                .post('/api/auth/reset-password')
+                .send({ email: 'test@jest.com', code, password: 'otraClave456' });
+            expect(res.statusCode).toBe(400);
+        });
+
+        test('tras 5 intentos fallidos el código queda bloqueado aunque luego se acierte', async () => {
+            await skipCooldown();
+            await request(app).post('/api/auth/forgot-password').send({ email: 'test@jest.com' });
+            const code = lastCodeFor('test@jest.com');
+            const wrong = code === '000000' ? '111111' : '000000';
+            for (let i = 0; i < 5; i++) {
+                await request(app)
+                    .post('/api/auth/reset-password')
+                    .send({ email: 'test@jest.com', code: wrong, password: 'otraClave456' });
+            }
+            const res = await request(app)
+                .post('/api/auth/reset-password')
+                .send({ email: 'test@jest.com', code, password: 'otraClave456' });
+            expect(res.statusCode).toBe(400);
         });
     });
 });

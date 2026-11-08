@@ -4,6 +4,16 @@ const { USERNAME_REGEX } = require('./common');
 // bcrypt solo considera los primeros 72 BYTES de la contraseña; más allá se ignora en silencio.
 const BCRYPT_MAX_BYTES = 72;
 
+const passwordSchema = z
+    .string()
+    .min(8, 'La contraseña debe tener al menos 8 caracteres')
+    .refine(
+        (p) => Buffer.byteLength(p, 'utf8') <= BCRYPT_MAX_BYTES,
+        'La contraseña es demasiado larga'
+    );
+
+const emailSchema = z.string().trim().toLowerCase().max(254).email('Email inválido');
+
 const registerSchema = z.object({
     username: z
         .string()
@@ -12,14 +22,8 @@ const registerSchema = z.object({
             USERNAME_REGEX,
             'El nombre de usuario debe tener entre 3 y 30 caracteres (letras, números, punto, guion o guion bajo)'
         ),
-    email: z.string().trim().toLowerCase().max(254).email('Email inválido'),
-    password: z
-        .string()
-        .min(8, 'La contraseña debe tener al menos 8 caracteres')
-        .refine(
-            (p) => Buffer.byteLength(p, 'utf8') <= BCRYPT_MAX_BYTES,
-            'La contraseña es demasiado larga'
-        ),
+    email: emailSchema,
+    password: passwordSchema,
 });
 
 const loginSchema = z
@@ -30,4 +34,12 @@ const loginSchema = z
     })
     .refine((d) => d.email || d.username, 'Email o nombre de usuario requerido');
 
-module.exports = { registerSchema, loginSchema };
+const forgotPasswordSchema = z.object({ email: emailSchema });
+
+const resetPasswordSchema = z.object({
+    email: emailSchema,
+    code: z.string().trim().regex(/^\d{6}$/, 'El código tiene 6 dígitos'),
+    password: passwordSchema,
+});
+
+module.exports = { registerSchema, loginSchema, forgotPasswordSchema, resetPasswordSchema };

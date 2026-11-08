@@ -23,6 +23,21 @@ async function setupTestDb() {
   `);
 
   try { await db.query('ALTER TABLE users ADD COLUMN are_stats_public TINYINT(1) NOT NULL DEFAULT 1'); } catch (_) {}
+  try { await db.query('ALTER TABLE users ADD COLUMN password_changed_at BIGINT UNSIGNED NULL'); } catch (_) {}
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS password_resets (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id INT NOT NULL,
+      code_hash CHAR(64) NOT NULL,
+      expires_at DATETIME NOT NULL,
+      attempts TINYINT UNSIGNED NOT NULL DEFAULT 0,
+      used_at DATETIME NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_resets_user (user_id, used_at),
+      CONSTRAINT fk_resets_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `);
 
   await db.query(`
     CREATE TABLE IF NOT EXISTS token_blacklist (

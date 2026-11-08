@@ -40,6 +40,16 @@ const protect = async (req, res, next) => {
             return next(new UnauthorizedError('Usuario no encontrado con este token'));
         }
 
+        // 4. ¿Se cambió la contraseña después de emitir este token? (recuperación de cuenta:
+        //    cierra las sesiones abiertas en otros dispositivos). iat está en segundos.
+        if (user.password_changed_at) {
+            const changedAt = Number(user.password_changed_at);
+            if (decoded.iat < changedAt) {
+                return next(new UnauthorizedError('La contraseña cambió. Inicia sesión de nuevo.'));
+            }
+        }
+        delete user.password_changed_at;
+
         req.user = user;
         req.token = token;
         next();

@@ -66,6 +66,7 @@ docker exec -i lectorDB sh -c 'mysql -u root -p"$MYSQL_ROOT_PASSWORD" anti_socia
 | `NODE_ENV=production` | Log nivel `info`, sin detalles de errores al cliente |
 | `TRUST_PROXY=1` | IP real del cliente detrás de Nginx (necesario para el rate limiting) |
 | `LOG_LEVEL` | Opcional (`info` por defecto en producción) |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM` | Correo de "Olvidé mi contraseña". Sin ellos la API arranca, pero los códigos no se envían (queda un error en el log). El `docker-compose.yml` debe pasarlas al servicio `api` |
 
 Si cambias el `.env`, aplica con `deploy\deploy.bat`, que recrea el contenedor.
 

@@ -15,6 +15,11 @@ function validateEnv() {
     if (process.env.JWT_SECRET.length < MIN_JWT_SECRET_LENGTH) {
         throw new Error(`JWT_SECRET debe tener al menos ${MIN_JWT_SECRET_LENGTH} caracteres`);
     }
+    const smtp = ['SMTP_HOST', 'SMTP_USER', 'SMTP_PASS'].filter((key) => !process.env[key]);
+    if (process.env.NODE_ENV === 'production' && smtp.length > 0) {
+        // No se bloquea el arranque: la API funciona, pero "Olvidé mi contraseña" no enviará correos.
+        console.warn(`[env] Falta configurar ${smtp.join(', ')}: los correos de recuperación no se enviarán.`);
+    }
 }
 
 module.exports = { validateEnv };

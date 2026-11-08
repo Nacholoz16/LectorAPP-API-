@@ -25,7 +25,7 @@ class UserModel {
     // Usado por el middleware de auth: sin password_hash.
     static async findById(id) {
         const [rows] = await db.execute(
-            'SELECT id, username, email, avatar_url, is_profile_public, are_stats_public FROM users WHERE id = ?',
+            'SELECT id, username, email, avatar_url, is_profile_public, are_stats_public, password_changed_at FROM users WHERE id = ?',
             [id]
         );
         return rows[0];
