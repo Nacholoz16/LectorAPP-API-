@@ -71,19 +71,25 @@ class ReadingModel {
         return rows;
     }
 
+    // Likes por subconsulta correlacionada en vez de LEFT JOIN + GROUP BY:
+    // cada fila resuelve 2 búsquedas por índice (idx_likes_log_user / unique_user_reading_like)
+    // y MySQL ya no necesita una tabla temporal para agrupar.
+    static _likesColumns() {
+        return `
+            (SELECT COUNT(*) FROM reading_likes lc WHERE lc.reading_log_id = r.id) AS likes_count,
+            EXISTS(SELECT 1 FROM reading_likes lh WHERE lh.reading_log_id = r.id AND lh.user_id = ?) AS has_liked`;
+    }
+
     // 2. BIBLIOTECA DE UN USUARIO (versión dueño: público y privado)
     static async getAllByUserId(userId, limit = 10, offset = 0) {
         const [rows] = await db.execute(`
             SELECT
                 r.*,
                 b.title, b.author, b.cover_url, b.external_id, b.page_count, b.isbn, b.published_year,
-                COUNT(rl.id) AS likes_count,
-                MAX(CASE WHEN rl.user_id = ? THEN 1 ELSE 0 END) AS has_liked
+                ${this._likesColumns()}
             FROM reading_logs r
             JOIN books b ON r.book_id = b.id
-            LEFT JOIN reading_likes rl ON rl.reading_log_id = r.id
             WHERE r.user_id = ?
-            GROUP BY r.id, b.title, b.author, b.cover_url, b.external_id, b.page_count, b.isbn, b.published_year
             ORDER BY r.created_at DESC
             LIMIT ? OFFSET ?
         `, [String(userId), String(userId), String(limit), String(offset)]);
@@ -96,39 +102,53 @@ class ReadingModel {
             SELECT
                 r.id, r.status, r.rating, r.duration_days, r.review_text, r.current_page, r.updated_at, r.is_log_public,
                 b.title, b.author, b.cover_url, b.external_id, b.page_count,
-                COUNT(rl.id) AS likes_count,
-                MAX(CASE WHEN rl.user_id = ? THEN 1 ELSE 0 END) AS has_liked
+                ${this._likesColumns()}
             FROM reading_logs r
             JOIN books b ON r.book_id = b.id
-            LEFT JOIN reading_likes rl ON rl.reading_log_id = r.id
             WHERE r.user_id = ?
               AND r.is_log_public = 1
-            GROUP BY r.id, b.title, b.author, b.cover_url, b.external_id, b.page_count
             ORDER BY r.created_at DESC
             LIMIT ? OFFSET ?
         `, [String(currentUserId || 0), String(userId), String(limit), String(offset)]);
         return rows;
     }
 
-    // 4. FEED GLOBAL (lo último que se ha leído en la plataforma)
-    static async getGlobalFeed(limit = 10, offset = 0, currentUserId = null) {
+    /**
+     * 4. FEED GLOBAL con paginación por cursor.
+     * `beforeId` = id del último elemento ya mostrado (null para la primera página).
+     * A diferencia de OFFSET, no duplica ni salta publicaciones cuando entran nuevas
+     * mientras el usuario hace scroll, y su costo no crece con la página.
+     * Usa el índice idx_logs_public_id (is_log_public, id).
+     */
+    static async getGlobalFeed(limit = 10, beforeId = null, currentUserId = null) {
+        const cursorFilter = beforeId ? 'AND r.id < ?' : '';
+        const params = [String(currentUserId || 0)];
+        if (beforeId) params.push(String(beforeId));
+        params.push(String(limit));
+
         const [rows] = await db.execute(`
             SELECT
                 r.id, r.status, r.rating, r.review_text, r.current_page, r.created_at, r.duration_days,
                 b.title, b.author, b.cover_url, b.external_id, b.isbn, b.page_count, b.published_year,
                 u.username, u.avatar_url,
-                COUNT(rl.id) AS likes_count,
-                MAX(CASE WHEN rl.user_id = ? THEN 1 ELSE 0 END) AS has_liked
+                ${this._likesColumns()}
             FROM reading_logs r
             JOIN books b ON r.book_id = b.id
             JOIN users u ON r.user_id = u.id
-            LEFT JOIN reading_likes rl ON rl.reading_log_id = r.id
-            WHERE r.is_log_public = 1
-            GROUP BY r.id, b.title, b.author, b.cover_url, b.external_id, b.isbn, b.page_count, b.published_year, u.username, u.avatar_url
-            ORDER BY r.created_at DESC
-            LIMIT ? OFFSET ?
-        `, [String(currentUserId || 0), String(limit), String(offset)]);
+            WHERE r.is_log_public = 1 ${cursorFilter}
+            ORDER BY r.id DESC
+            LIMIT ?
+        `, params);
         return rows;
+    }
+
+    /** Cuántas publicaciones públicas hay más nuevas que `afterId` (banner "X nuevas publicaciones"). */
+    static async countPublicNewerThan(afterId) {
+        const [rows] = await db.execute(
+            'SELECT COUNT(*) AS count FROM reading_logs WHERE is_log_public = 1 AND id > ?',
+            [afterId]
+        );
+        return Number(rows[0].count);
     }
 
     /**

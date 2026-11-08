@@ -69,6 +69,7 @@ async function setupTestDb() {
 
   try { await db.query('ALTER TABLE reading_logs ADD COLUMN current_page INT DEFAULT 0'); } catch (_) {}
   try { await db.query('ALTER TABLE reading_logs ADD UNIQUE KEY uniq_user_book (user_id, book_id)'); } catch (_) {}
+  try { await db.query('CREATE INDEX idx_logs_public_id ON reading_logs (is_log_public, id)'); } catch (_) {}
 
   await db.query(`
     CREATE TABLE IF NOT EXISTS reading_likes (

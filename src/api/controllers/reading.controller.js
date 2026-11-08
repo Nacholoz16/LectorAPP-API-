@@ -9,9 +9,14 @@ const create = async (req, res) => {
 };
 
 const getGlobalFeed = async (req, res) => {
-    const { page, limit } = req.validated.query;
-    const feed = await ReadingService.getRecentReadings(page, limit, req.user.id);
+    const { limit, before_id } = req.validated.query;
+    const feed = await ReadingService.getRecentReadings(limit, before_id, req.user.id);
     res.json(feed);
+};
+
+const getNewCount = async (req, res) => {
+    const { after_id } = req.validated.query;
+    res.json(await ReadingService.countNewReadings(after_id));
 };
 
 const getMyLibrary = async (req, res) => {
@@ -53,6 +58,7 @@ const getBookStats = async (req, res) => {
 module.exports = {
     create,
     getGlobalFeed,
+    getNewCount,
     getMyLibrary,
     update,
     delete: remove,

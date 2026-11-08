@@ -236,8 +236,8 @@ describe('API E2E', () => {
             expect(res.statusCode).toBe(400);
         });
 
-        test('feed global: page no numérica → 400', async () => {
-            const res = await request(app).get('/api/readings/feed?page=abc').set(auth(ownerToken));
+        test('feed global: before_id no numérico → 400', async () => {
+            const res = await request(app).get('/api/readings/feed?before_id=abc').set(auth(ownerToken));
             expect(res.statusCode).toBe(400);
         });
 
@@ -247,6 +247,28 @@ describe('API E2E', () => {
             expect(res.body).toHaveLength(1);
             expect(typeof res.body[0].has_liked).toBe('boolean');
             expect(typeof res.body[0].likes_count).toBe('number');
+        });
+
+        test('feed global por cursor: before_id excluye lo ya visto', async () => {
+            const res = await request(app)
+                .get(`/api/readings/feed?before_id=${publicLogId}`)
+                .set(auth(ownerToken));
+            expect(res.statusCode).toBe(200);
+            expect(res.body.find((l) => l.id === publicLogId)).toBeUndefined();
+        });
+
+        test('feed/new-count: cuenta publicaciones más nuevas que after_id', async () => {
+            const all = await request(app).get('/api/readings/feed/new-count?after_id=0').set(auth(ownerToken));
+            expect(all.statusCode).toBe(200);
+            expect(all.body).toEqual({ count: 1 });
+
+            const none = await request(app)
+                .get(`/api/readings/feed/new-count?after_id=${publicLogId}`)
+                .set(auth(ownerToken));
+            expect(none.body).toEqual({ count: 0 });
+
+            const bad = await request(app).get('/api/readings/feed/new-count').set(auth(ownerToken));
+            expect(bad.statusCode).toBe(400);
         });
 
         test('update parcial: cambia rating sin borrar la reseña', async () => {

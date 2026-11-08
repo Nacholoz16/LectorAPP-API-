@@ -96,10 +96,13 @@ class ReadingService {
         });
     }
 
-    async getRecentReadings(page, limit, currentUserId) {
-        const offset = (page - 1) * limit;
-        const rows = await ReadingModel.getGlobalFeed(limit, offset, currentUserId);
+    async getRecentReadings(limit, beforeId, currentUserId) {
+        const rows = await ReadingModel.getGlobalFeed(limit, beforeId, currentUserId);
         return rows.map(normalizeLog);
+    }
+
+    async countNewReadings(afterId) {
+        return { count: await ReadingModel.countPublicNewerThan(afterId) };
     }
 
     async getMyLibrary(userId, page, limit) {

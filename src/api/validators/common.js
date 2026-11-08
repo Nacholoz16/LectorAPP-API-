@@ -11,6 +11,16 @@ const paginationQuery = z.object({
     limit: z.coerce.number().int().min(1).max(MAX_PAGE_SIZE).default(10),
 });
 
+/** Feed por cursor: `before_id` = id del último elemento ya cargado (omitir en la primera página). */
+const feedQuery = z.object({
+    limit: z.coerce.number().int().min(1).max(MAX_PAGE_SIZE).default(10),
+    before_id: z.coerce.number().int().positive().optional(),
+});
+
+const newCountQuery = z.object({
+    after_id: z.coerce.number().int().min(0),
+});
+
 const idParam = z.object({
     id: z.coerce.number().int().positive(),
 });
@@ -19,4 +29,12 @@ const usernameParam = z.object({
     username: z.string().regex(USERNAME_REGEX, 'Nombre de usuario inválido'),
 });
 
-module.exports = { USERNAME_REGEX, MAX_PAGE_SIZE, paginationQuery, idParam, usernameParam };
+module.exports = {
+    USERNAME_REGEX,
+    MAX_PAGE_SIZE,
+    paginationQuery,
+    feedQuery,
+    newCountQuery,
+    idParam,
+    usernameParam,
+};

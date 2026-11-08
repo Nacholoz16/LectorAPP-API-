@@ -4,6 +4,7 @@ validateEnv();
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
+const compression = require('compression');
 const pinoHttp = require('pino-http');
 const rateLimit = require('express-rate-limit');
 const logger = require('./utils/logger');
@@ -29,6 +30,9 @@ app.use(cors({
     ],
     credentials: true,
 }));
+// gzip de respuestas JSON (el feed y las bibliotecas se reducen ~70-80%). Si Nginx ya
+// comprime, no hay doble compresión: Nginx no recomprime respuestas con Content-Encoding.
+app.use(compression());
 app.use(express.json({ limit: '100kb' }));
 
 // Log de peticiones estructurado. Solo método, URL, status y tiempo: nunca bodies ni headers.
