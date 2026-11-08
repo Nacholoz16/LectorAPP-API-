@@ -1,78 +1,32 @@
 const UserService = require('../../services/user.service');
 
-const getProfile = async (req, res, next) => {
-    try {
-        const { username } = req.params;
-        const requestingUserId = req.user.id; // Viene del token (Middleware protect)
-
-        const profile = await UserService.getProfile(username, requestingUserId);
-        res.json(profile);
-    } catch (error) {
-        if (error.message === 'Usuario no encontrado') {
-            return res.status(404).json({ error: error.message });
-        }
-        next(error);
-    }
+const getProfile = async (req, res) => {
+    const { username } = req.validated.params;
+    const profile = await UserService.getProfile(username, req.user.id);
+    res.json(profile);
 };
 
-const getLibrary = async (req, res, next) => {
-    try {
-        const { username } = req.params;
-        const requestingUserId = req.user.id;
-        const page = req.query.page || 1;
-        const limit = req.query.limit || 10;
-
-        const library = await UserService.getLibrary(username, requestingUserId, page, limit);
-        res.json(library);
-    } catch (error) {
-        if (error.message === 'Usuario no encontrado') {
-            return res.status(404).json({ error: error.message });
-        }
-        next(error);
-    }
+const getLibrary = async (req, res) => {
+    const { username } = req.validated.params;
+    const { page, limit } = req.validated.query;
+    const library = await UserService.getLibrary(username, req.user.id, page, limit);
+    res.json(library);
 };
 
-const UserModel = require('../../models/user.model');
-const ReadingModel = require('../../models/reading.model');
-
-const getStats = async (req, res, next) => {
-    try {
-        const { username } = req.params;
-        const requestingUserId = req.user.id;
-        const stats = await UserService.getStats(username, requestingUserId);
-        res.json(stats);
-    } catch (error) {
-        if (error.message === 'Usuario no encontrado') {
-            return res.status(404).json({ error: error.message });
-        }
-        next(error);
-    }
+const getStats = async (req, res) => {
+    const { username } = req.validated.params;
+    const stats = await UserService.getStats(username, req.user.id);
+    res.json(stats);
 };
 
-const setGoal = async (req, res, next) => {
-    try {
-        const { target_books } = req.body;
-        if (!target_books || parseInt(target_books) <= 0) {
-            return res.status(400).json({ error: 'Meta inválida' });
-        }
-        const result = await ReadingModel.setReadingGoal(req.user.id, parseInt(target_books));
-        res.json(result);
-    } catch (error) {
-        next(error);
-    }
+const setGoal = async (req, res) => {
+    const result = await UserService.setReadingGoal(req.user.id, req.body.target_books);
+    res.json(result);
 };
 
-const updatePrivacy = async (req, res, next) => {
-    try {
-        const { is_profile_public, are_stats_public } = req.body;
-        const result = await UserService.updatePrivacySettings(req.user.id, {
-            is_profile_public,
-            are_stats_public
-        });
-        res.json(result);
-    } catch (error) {
-        next(error);
-    }
+const updatePrivacy = async (req, res) => {
+    const result = await UserService.updatePrivacySettings(req.user.id, req.body);
+    res.json(result);
 };
 
 module.exports = { getProfile, getLibrary, getStats, setGoal, updatePrivacy };

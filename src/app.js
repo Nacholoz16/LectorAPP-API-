@@ -1,100 +1,104 @@
+const { validateEnv } = require('./config/env');
+validateEnv();
+
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
-const morgan = require('morgan');
-require('dotenv').config();
+const pinoHttp = require('pino-http');
+const rateLimit = require('express-rate-limit');
+const logger = require('./utils/logger');
+const db = require('./config/db');
+const { AppError } = require('./utils/errors');
 
-// Inicializar app
+const isTest = process.env.NODE_ENV === 'test';
+
 const app = express();
 
-// Middlewares Globales
-app.use(helmet()); // Seguridad HTTP headers
+// La API corre detrás de Nginx: confiar en el primer proxy para obtener la IP real
+// del cliente (req.ip). Sin esto, el rate limiting agrupa a todos bajo la IP del proxy.
+app.set('trust proxy', Number(process.env.TRUST_PROXY ?? 1));
+
+// --- Middlewares globales ---
+app.use(helmet());
 app.use(cors({
-  origin: [
-    'https://nacholoz3d.cl',
-    'https://www.nacholoz3d.cl',
-    'http://localhost:3000',
-    'http://localhost:4200',
-  ],
-  credentials: true,
-})); // Permitir solo orígenes conocidos
-app.use(express.json({ limit: '1mb' })); // Parsear body JSON con límite de tamaño
-app.use(morgan('dev')); // Logger de peticiones en consola
+    origin: [
+        'https://nacholoz3d.cl',
+        'https://www.nacholoz3d.cl',
+        'http://localhost:3000',
+        'http://localhost:4200',
+    ],
+    credentials: true,
+}));
+app.use(express.json({ limit: '100kb' }));
 
-// Logger detallado personalizado
-app.use((req, res, next) => {
-    const timestamp = new Date().toISOString();
-    console.log(`\n[API REQUEST ${timestamp}] ${req.method} ${req.originalUrl}`);
-    if (Object.keys(req.query).length > 0) {
-        console.log(`  Query:`, JSON.stringify(req.query));
-    }
-    if (req.body && Object.keys(req.body).length > 0) {
-        console.log(`  Body:`, JSON.stringify(req.body));
-    }
+// Log de peticiones estructurado. Solo método, URL, status y tiempo: nunca bodies ni headers.
+app.use(pinoHttp({
+    logger,
+    serializers: {
+        req: (req) => ({ id: req.id, method: req.method, url: req.url }),
+        res: (res) => ({ statusCode: res.statusCode }),
+    },
+    customLogLevel: (req, res, err) => {
+        if (err || res.statusCode >= 500) return 'error';
+        if (res.statusCode >= 400) return 'warn';
+        return 'info';
+    },
+}));
 
-    const oldSend = res.send;
-    res.send = function (data) {
-        console.log(`[API RESPONSE ${timestamp}] Status: ${res.statusCode}`);
-        return oldSend.apply(res, arguments);
-    };
-    next();
-});
+// Límite general por IP para toda la API (los endpoints sensibles tienen límites propios más estrictos).
+app.use('/api', rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: 300,
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+    skip: () => isTest,
+    message: { error: 'Demasiadas peticiones, intenta de nuevo más tarde.', code: 'RATE_LIMITED' },
+}));
 
-
-
-// Rutas AUTH
-const authRoutes = require('./api/routes/auth.routes');
-//console.log("authRoutes:", authRoutes);
-app.use('/api/auth', authRoutes);
-
-// Rutas BOOKS
-const bookRoutes = require('./api/routes/book.routes');
-//console.log("bookRoutes:", bookRoutes);
-app.use('/api/books', bookRoutes);
-
-// Rutas READINGS
-const readingRoutes = require('./api/routes/reading.routes');
-//console.log("readingRoutes:", readingRoutes);
-app.use('/api/readings', readingRoutes);
-
-// Rutas USERS
-const userRoutes = require('./api/routes/user.routes');
-//console.log("userRoutes:", userRoutes);
-app.use('/api/users', userRoutes);
-
-
-//===================================================================================
+// --- Rutas ---
+app.use('/api/auth', require('./api/routes/auth.routes'));
+app.use('/api/books', require('./api/routes/book.routes'));
+app.use('/api/readings', require('./api/routes/reading.routes'));
+app.use('/api/users', require('./api/routes/user.routes'));
 
 app.get('/api/health', async (req, res) => {
     try {
-        // Probamos conexión a DB
-        const db = require('./config/db');
-        const [rows] = await db.query('SELECT 1 as val');
-        res.json({ 
-            status: 'OK', 
-            server: 'Running', 
-            db: rows[0].val === 1 ? 'Connected' : 'Error' 
-        });
-        console.log('Health check passed');
-    } catch (error) {
-        res.status(500).json({ status: 'ERROR', error: error.message });
+        await db.query('SELECT 1');
+        res.json({ status: 'OK', db: 'Connected' });
+    } catch (err) {
+        req.log.error({ err }, 'Health check: base de datos no disponible');
+        res.status(503).json({ status: 'ERROR', db: 'Disconnected' });
     }
 });
 
-// Middleware de Manejo de Errores Global
-app.use((err, req, res, next) => {
-    console.error(err.stack);
-    res.status(500).json({ 
-        error: 'Algo salió mal en el servidor',
-        details: process.env.NODE_ENV === 'development' ? err.message : undefined
-    });
+// --- 404 ---
+app.use((req, res) => {
+    res.status(404).json({ error: 'Ruta no encontrada', code: 'NOT_FOUND' });
 });
 
-// Iniciar Servidor
+// --- Manejo de errores global ---
+// Formato único de error para toda la API: { error: string, code: string }
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, next) => {
+    if (err.type === 'entity.parse.failed') {
+        return res.status(400).json({ error: 'JSON inválido', code: 'INVALID_JSON' });
+    }
+    if (err.type === 'entity.too.large') {
+        return res.status(413).json({ error: 'La petición es demasiado grande', code: 'PAYLOAD_TOO_LARGE' });
+    }
+    if (err instanceof AppError) {
+        return res.status(err.status).json({ error: err.message, code: err.code });
+    }
+
+    req.log.error({ err }, 'Error no controlado');
+    res.status(500).json({ error: 'Algo salió mal en el servidor', code: 'INTERNAL_ERROR' });
+});
+
+// --- Arranque ---
 if (require.main === module) {
     const PORT = process.env.PORT || 3000;
     app.listen(PORT, () => {
-        console.log(`Server corriendo en http://localhost:${PORT}`);
+        logger.info(`Servidor corriendo en http://localhost:${PORT}`);
     });
 }
 

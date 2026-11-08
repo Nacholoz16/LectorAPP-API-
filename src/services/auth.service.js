@@ -2,93 +2,82 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const UserModel = require('../models/user.model');
 const db = require('../config/db');
+const { signToken, hashToken } = require('../utils/tokens');
+const { ConflictError, UnauthorizedError, isDuplicateEntry } = require('../utils/errors');
+
+const BCRYPT_ROUNDS = 10;
+
+// Hash ficticio para comparar cuando el usuario no existe: así el login tarda lo mismo
+// exista o no la cuenta, y no se pueden enumerar usuarios midiendo tiempos de respuesta.
+const DUMMY_PASSWORD_HASH = bcrypt.hashSync('dummy-password-for-timing-safety', BCRYPT_ROUNDS);
 
 class AuthService {
-  
-  async registerUser({ username, email, password }) { 
-    console.log('Registering user:', email);
-    // 1. Verificar duplicados
-    const emailExists = await UserModel.findByEmail(email);
-    if (emailExists) throw new Error('El email ya está registrado');
+    /** `data` ya viene validado y normalizado (email en minúsculas) por registerSchema. */
+    async registerUser({ username, email, password }) {
+        const [emailExists, usernameExists] = await Promise.all([
+            UserModel.findByEmail(email),
+            UserModel.findByUsername(username),
+        ]);
+        if (emailExists) throw new ConflictError('El email ya está registrado');
+        if (usernameExists) throw new ConflictError('El nombre de usuario ya está ocupado');
 
-    const userExists = await UserModel.findByUsername(username);
-    if (userExists) throw new Error('El nombre de usuario ya está ocupado');
+        const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
 
-    // 2. Encriptar contraseña (Cost factor 10 es estándar hoy)
-    const salt = await bcrypt.genSalt(10);
-    const passwordHash = await bcrypt.hash(password, salt);
+        let userId;
+        try {
+            userId = await UserModel.create({ username, email, passwordHash });
+        } catch (error) {
+            // Dos registros simultáneos con el mismo email/username: lo resuelve el UNIQUE de la BD.
+            if (isDuplicateEntry(error)) {
+                throw new ConflictError('El email o nombre de usuario ya está registrado');
+            }
+            throw error;
+        }
 
-    // 3. Crear usuario
-    const userId = await UserModel.create({ username, email, passwordHash });
-
-    // 4. Retornar datos (sin password) y Token inmediato (UX moderna)
-    return {
-      user: { id: userId, username, email },
-      token: this.generateToken(userId)
-    };
-  }
-
-async loginUser({ email, username, password }) {
-  if (!email && !username) {
-    throw new Error('Email o username requerido');
-  }
-
-  let user;
-
-  if (email) {
-    user = await UserModel.findByEmail(email.toLowerCase().trim());
-  } else {
-    user = await UserModel.findByUsername(username.trim());
-  }
-
-  if (!user) {
-    throw new Error('Credenciales inválidas');
-  }
-
-  const validPass = await bcrypt.compare(password, user.password_hash);
-  if (!validPass) {
-    throw new Error('Credenciales inválidas');
-  }
-
-  return {
-    user: {
-      id: user.id,
-      username: user.username,
-      email: user.email,
-      avatar: user.avatar_url
-    },
-    token: this.generateToken(user.id)
-  };
-}
-
-  async logout(token) {
-    if (!token) throw new Error('Token requerido');
-
-    const decoded = jwt.decode(token);
-    if (!decoded || !decoded.exp) throw new Error('Token inválido');
-
-    // Convertir timestamp a fecha MySQL (YYYY-MM-DD HH:MM:SS)
-    const expiresAtDate = new Date(decoded.exp * 1000).toISOString().slice(0, 19).replace('T', ' ');
-    
-    // Insertar token en blacklist
-    try {
-        await db.execute(
-            'INSERT IGNORE INTO token_blacklist (token, expires_at) VALUES (?, ?)',
-            [token, expiresAtDate]
-        );
-    } catch (e) {
-        console.error('Error insertando en blacklist:', e);
+        return {
+            user: { id: userId, username, email },
+            token: signToken(userId),
+        };
     }
 
-    return { success: true };
-  }
+    async loginUser({ email, username, password }) {
+        const user = email
+            ? await UserModel.findByEmail(email)
+            : await UserModel.findByUsername(username);
 
-  // Helper para tokens
-  generateToken(userId) {
-    return jwt.sign({ id: userId }, process.env.JWT_SECRET, {
-      expiresIn: '7d' // Sesión dura 1 semana
-    });
-  }
+        // Siempre se ejecuta bcrypt.compare (ver DUMMY_PASSWORD_HASH).
+        const validPassword = await bcrypt.compare(
+            password,
+            user ? user.password_hash : DUMMY_PASSWORD_HASH
+        );
+
+        if (!user || !validPassword) {
+            throw new UnauthorizedError('Credenciales inválidas');
+        }
+
+        return {
+            user: {
+                id: user.id,
+                username: user.username,
+                email: user.email,
+                avatar: user.avatar_url,
+            },
+            token: signToken(user.id),
+        };
+    }
+
+    /** Revoca un token ya verificado por el middleware `protect`. */
+    async logout(token) {
+        const { exp } = jwt.decode(token);
+        const expiresAt = new Date(exp * 1000);
+
+        await db.execute(
+            'INSERT IGNORE INTO token_blacklist (token, expires_at) VALUES (?, ?)',
+            [hashToken(token), expiresAt]
+        );
+
+        return { success: true };
+    }
 }
 
 module.exports = new AuthService();

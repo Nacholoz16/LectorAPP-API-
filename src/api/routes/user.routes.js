@@ -1,21 +1,23 @@
 const express = require('express');
-const router = express.Router();
 const UserController = require('../controllers/user.controller');
 const { protect } = require('../middlewares/auth.middleware');
+const { validate } = require('../middlewares/validate');
+const { paginationQuery, usernameParam } = require('../validators/common');
+const { goalSchema, privacySchema } = require('../validators/user.validators');
+
+const router = express.Router();
+
+router.use(protect);
 
 // POST /api/users/goal (Fijar meta de lectura)
-router.post('/goal', protect, UserController.setGoal);
+router.post('/goal', validate({ body: goalSchema }), UserController.setGoal);
 
 // PUT /api/users/privacy (Actualizar ajustes de privacidad)
-router.put('/privacy', protect, UserController.updatePrivacy);
+router.put('/privacy', validate({ body: privacySchema }), UserController.updatePrivacy);
 
-// GET /api/users/:username/library (Biblioteca paginada) - Debe ir ANTES de /:username
-router.get('/:username/library', protect, UserController.getLibrary);
-
-// GET /api/users/:username/stats (Estadísticas del usuario)
-router.get('/:username/stats', protect, UserController.getStats);
-
-// GET /api/users/:username (Protegido para saber quién visita)
-router.get('/:username', protect, UserController.getProfile);
+// Las rutas con sufijo deben ir ANTES de /:username
+router.get('/:username/library', validate({ params: usernameParam, query: paginationQuery }), UserController.getLibrary);
+router.get('/:username/stats', validate({ params: usernameParam }), UserController.getStats);
+router.get('/:username', validate({ params: usernameParam }), UserController.getProfile);
 
 module.exports = router;

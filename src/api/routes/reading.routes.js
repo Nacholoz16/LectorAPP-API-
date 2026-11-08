@@ -1,14 +1,25 @@
 const express = require('express');
-const router = express.Router();
 const ReadingController = require('../controllers/reading.controller');
 const { protect } = require('../middlewares/auth.middleware');
+const { validate } = require('../middlewares/validate');
+const { paginationQuery, idParam } = require('../validators/common');
+const {
+    createReadingSchema,
+    updateReadingSchema,
+    sessionSchema,
+} = require('../validators/reading.validators');
 
-router.post('/', protect, ReadingController.create);
-router.get('/feed', protect, ReadingController.getGlobalFeed);
-router.get('/my-library', protect, ReadingController.getMyLibrary); 
-router.post('/:id/like', protect, ReadingController.toggleLike);
-router.post('/:id/session', protect, ReadingController.recordSession);
-router.get('/:id/stats', protect, ReadingController.getBookStats);
-router.put('/:id', protect, ReadingController.update);
-router.delete('/:id', protect, ReadingController.delete);
+const router = express.Router();
+
+router.use(protect);
+
+router.post('/', validate({ body: createReadingSchema }), ReadingController.create);
+router.get('/feed', validate({ query: paginationQuery }), ReadingController.getGlobalFeed);
+router.get('/my-library', validate({ query: paginationQuery }), ReadingController.getMyLibrary);
+router.post('/:id/like', validate({ params: idParam }), ReadingController.toggleLike);
+router.post('/:id/session', validate({ params: idParam, body: sessionSchema }), ReadingController.recordSession);
+router.get('/:id/stats', validate({ params: idParam }), ReadingController.getBookStats);
+router.put('/:id', validate({ params: idParam, body: updateReadingSchema }), ReadingController.update);
+router.delete('/:id', validate({ params: idParam }), ReadingController.delete);
+
 module.exports = router;

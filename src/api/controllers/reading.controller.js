@@ -1,132 +1,62 @@
 const ReadingService = require('../../services/reading.service');
-const ReadingModel = require('../../models/reading.model'); // Importamos modelo directo para consultas simples
 
-class ReadingController {
+// Controladores delgados: validación en middlewares, lógica y permisos en ReadingService.
+// Los errores (NotFoundError, ForbiddenError, ...) los traduce el manejador global de app.js.
 
-    async create(req, res) {
-        try {
-            const result = await ReadingService.registerReading(req.user.id, req.body);
-            res.status(201).json(result);
-        } catch (error) {
-            res.status(400).json({ message: error.message });
-        }
-    }
+const create = async (req, res) => {
+    const result = await ReadingService.registerReading(req.user.id, req.body);
+    res.status(201).json(result);
+};
 
-    async getGlobalFeed(req, res) {
-        try {
-            const page = req.query.page || 1;
-            const limit = req.query.limit || 10;
-            const currentUserId = req.user ? req.user.id : null;
-            const feed = await ReadingService.getRecentReadings(page, limit, currentUserId);
-            res.json(feed);
-        } catch (error) {
-            res.status(500).json({ message: 'Error al obtener feed' });
-        }
-    }
+const getGlobalFeed = async (req, res) => {
+    const { page, limit } = req.validated.query;
+    const feed = await ReadingService.getRecentReadings(page, limit, req.user.id);
+    res.json(feed);
+};
 
-    // --- NUEVO MÉTODO ---
-    async getMyLibrary(req, res) {
-        try {
-            const page = req.query.page || 1;
-            const limit = req.query.limit || 10;
-            const offset = (Math.max(1, parseInt(page)) - 1) * parseInt(limit);
-            const readings = await ReadingModel.getAllByUserId(req.user.id, parseInt(limit), offset);
-            // Normalización ligera
-            const response = readings.map(r => ({
-                ...r,
-                authors: r.author || 'Desconocido'
-            }));
-            res.json(response);
-        } catch (error) {
-            res.status(500).json({ message: 'Error al obtener biblioteca' });
-        }
-    }
+const getMyLibrary = async (req, res) => {
+    const { page, limit } = req.validated.query;
+    const library = await ReadingService.getMyLibrary(req.user.id, page, limit);
+    res.json(library);
+};
 
-    // --- AGREGAR ESTOS MÉTODOS ---
+const update = async (req, res) => {
+    const { id } = req.validated.params;
+    const result = await ReadingService.updateReading(req.user.id, id, req.body);
+    res.json(result);
+};
 
-    async update(req, res) {
-        try {
-            const { id } = req.params; // ID del log de lectura
-            const result = await ReadingService.updateReading(req.user.id, id, req.body);
-            res.json(result);
-        } catch (error) {
-            if (error.message.includes('no tienes permiso')) {
-                return res.status(403).json({ error: error.message });
-            }
-            res.status(400).json({ message: error.message });
-        }
-    }
+const remove = async (req, res) => {
+    const { id } = req.validated.params;
+    const result = await ReadingService.deleteReading(req.user.id, id);
+    res.json(result);
+};
 
-    async delete(req, res) {
-        try {
-            const { id } = req.params; // ID del log de lectura
-            const result = await ReadingService.deleteReading(req.user.id, id);
-            res.json(result);
-        } catch (error) {
-            if (error.message.includes('no tienes permiso')) {
-                return res.status(403).json({ error: error.message });
-            }
-            res.status(400).json({ message: error.message });
-        }
-    }
+const toggleLike = async (req, res) => {
+    const { id } = req.validated.params;
+    const result = await ReadingService.toggleLike(req.user.id, id);
+    res.json(result);
+};
 
-    async toggleLike(req, res) {
-        try {
-            const { id } = req.params;
-            const result = await ReadingService.toggleLike(req.user.id, id);
-            res.json(result);
-        } catch (error) {
-            if (error.message.includes('No tienes permiso')) {
-                return res.status(403).json({ error: error.message });
-            }
-            if (error.message.includes('no encontrado')) {
-                return res.status(404).json({ error: error.message });
-            }
-            res.status(400).json({ message: error.message });
-        }
-    }
+const recordSession = async (req, res) => {
+    const { id } = req.validated.params;
+    const result = await ReadingService.recordSession(req.user.id, id, req.body);
+    res.json(result);
+};
 
-    async recordSession(req, res) {
-        try {
-            const { id } = req.params;
-            const { duration_minutes, pages_read, current_page } = req.body;
-            const result = await ReadingModel.recordSession(
-                req.user.id,
-                id,
-                parseInt(duration_minutes || 0),
-                parseInt(pages_read || 0),
-                current_page !== undefined ? parseInt(current_page) : null
-            );
-            res.json(result);
-        } catch (error) {
-            if (error.message.includes('No tienes permiso')) {
-                return res.status(403).json({ error: error.message });
-            }
-            res.status(400).json({ message: error.message });
-        }
-    }
+const getBookStats = async (req, res) => {
+    const { id } = req.validated.params;
+    const stats = await ReadingService.getBookStats(req.user.id, id);
+    res.json(stats);
+};
 
-    async getBookStats(req, res) {
-        try {
-            const { id } = req.params;
-            // Verificar que el log pertenece al usuario o es público
-            const [rows] = await require('../../config/db').execute(
-                'SELECT user_id, is_log_public FROM reading_logs WHERE id = ?',
-                [id]
-            );
-            if (!rows.length) {
-                return res.status(404).json({ error: 'Registro no encontrado' });
-            }
-            const log = rows[0];
-            if (log.user_id !== req.user.id && !log.is_log_public) {
-                return res.status(403).json({ error: 'No tienes permiso para ver estas estadísticas' });
-            }
-            const stats = await ReadingModel.getStatsByReadingLogId(id);
-            res.json(stats);
-        } catch (error) {
-            res.status(400).json({ message: error.message });
-        }
-    }
-}
-
-module.exports = new ReadingController();
+module.exports = {
+    create,
+    getGlobalFeed,
+    getMyLibrary,
+    update,
+    delete: remove,
+    toggleLike,
+    recordSession,
+    getBookStats,
+};

@@ -1,45 +1,50 @@
-const jwt = require('jsonwebtoken');
 const UserModel = require('../../models/user.model');
 const db = require('../../config/db');
+const { verifyToken, hashToken, extractBearerToken } = require('../../utils/tokens');
+const { UnauthorizedError } = require('../../utils/errors');
 
+/**
+ * Exige un JWT válido, no revocado y de un usuario existente.
+ * Deja disponibles `req.user` y `req.token`.
+ *
+ * Nota: los errores de base de datos se propagan como 500 (no como 401),
+ * para que una caída momentánea de MySQL no cierre la sesión de todos los usuarios.
+ */
 const protect = async (req, res, next) => {
-    let token;
-
-    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
-        try {
-            // Obtener el token del header "Bearer <token>"
-            token = req.headers.authorization.split(' ')[1];
-
-            // 1. Verificar si el token está en la lista negra (revocado)
-            const [blacklisted] = await db.execute(
-                'SELECT token FROM token_blacklist WHERE token = ?',
-                [token]
-            );
-            if (blacklisted.length > 0) {
-                return res.status(401).json({ error: 'Token revocado' });
-            }
-
-            // 2. Verificar el token matemáticamente
-            const decoded = jwt.verify(token, process.env.JWT_SECRET);
-
-            // Buscar el usuario asociado al token (sin password)
-            // Esto nos permite acceder a req.user.id en cualquier controlador protegido
-            const user = await UserModel.findById(decoded.id);
-            
-            if (!user) {
-                return res.status(401).json({ error: 'Usuario no encontrado con este token' });
-            }
-
-            req.user = user;
-            next(); // Continuar al controlador
-        } catch (error) {
-            console.error(error);
-            return res.status(401).json({ error: 'Token no autorizado o expirado' });
-        }
+    const token = extractBearerToken(req);
+    if (!token) {
+        return next(new UnauthorizedError('No autorizado, falta token'));
     }
 
-    if (!token) {
-        return res.status(401).json({ error: 'No autorizado, falta token' });
+    // 1. Verificación criptográfica primero: es barata y descarta basura sin tocar la BD.
+    let decoded;
+    try {
+        decoded = verifyToken(token);
+    } catch {
+        return next(new UnauthorizedError('Token no autorizado o expirado'));
+    }
+
+    try {
+        // 2. ¿Fue revocado con logout?
+        const [revoked] = await db.execute(
+            'SELECT 1 FROM token_blacklist WHERE token = ? LIMIT 1',
+            [hashToken(token)]
+        );
+        if (revoked.length > 0) {
+            return next(new UnauthorizedError('Token revocado'));
+        }
+
+        // 3. ¿El usuario sigue existiendo?
+        const user = await UserModel.findById(decoded.id);
+        if (!user) {
+            return next(new UnauthorizedError('Usuario no encontrado con este token'));
+        }
+
+        req.user = user;
+        req.token = token;
+        next();
+    } catch (error) {
+        next(error);
     }
 };
 

@@ -1,7 +1,37 @@
 const db = require('../src/config/db');
 
 async function setupTestDb() {
+  if (process.env.NODE_ENV !== 'test') {
+    console.error('Este script solo debe ejecutarse con NODE_ENV=test (usa la BD anti_social_test).');
+    process.exit(1);
+  }
   console.log('Creando/verificando tablas en DB de test...');
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS users (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      username VARCHAR(50) NOT NULL UNIQUE,
+      email VARCHAR(100) NOT NULL UNIQUE,
+      password_hash VARCHAR(255) NOT NULL,
+      bio VARCHAR(500),
+      avatar_url VARCHAR(255),
+      is_profile_public TINYINT(1) DEFAULT 1,
+      are_stats_public TINYINT(1) NOT NULL DEFAULT 1,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    )
+  `);
+
+  try { await db.query('ALTER TABLE users ADD COLUMN are_stats_public TINYINT(1) NOT NULL DEFAULT 1'); } catch (_) {}
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS token_blacklist (
+      token VARCHAR(500) PRIMARY KEY,
+      expires_at DATETIME NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_blacklist_expires (expires_at)
+    )
+  `);
 
   await db.query(`
     CREATE TABLE IF NOT EXISTS books (
@@ -38,6 +68,7 @@ async function setupTestDb() {
   `);
 
   try { await db.query('ALTER TABLE reading_logs ADD COLUMN current_page INT DEFAULT 0'); } catch (_) {}
+  try { await db.query('ALTER TABLE reading_logs ADD UNIQUE KEY uniq_user_book (user_id, book_id)'); } catch (_) {}
 
   await db.query(`
     CREATE TABLE IF NOT EXISTS reading_likes (

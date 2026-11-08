@@ -1,61 +1,62 @@
 const UserModel = require('../models/user.model');
 const ReadingModel = require('../models/reading.model');
+const { normalizeLog } = require('./reading.service');
+const { NotFoundError } = require('../utils/errors');
+
+const DEFAULT_PAGE_SIZE = 10;
 
 class UserService {
-    
-    // Obtener perfil (Info básica)
-    async getProfile(targetUsername, requestingUserId) {
-        // 1. Buscar al usuario objetivo
-        const targetUser = await UserModel.findByUsername(targetUsername);
-        if (!targetUser) throw new Error('Usuario no encontrado');
+    async _findUserOrFail(username) {
+        const user = await UserModel.findByUsername(username);
+        if (!user) throw new NotFoundError('Usuario no encontrado');
+        return user;
+    }
 
-        let libraryData = [];
-        if (requestingUserId === targetUser.id || targetUser.is_profile_public) {
-            libraryData = await this.getLibrary(targetUsername, requestingUserId, 1, 10);
+    /**
+     * Biblioteca visible para `requestingUserId`:
+     * - dueño: todo (público y privado)
+     * - visitante + perfil privado: nada
+     * - visitante + perfil público: solo lecturas públicas
+     */
+    async _libraryFor(targetUser, requestingUserId, page, limit) {
+        const offset = (page - 1) * limit;
+
+        let rows;
+        if (requestingUserId === targetUser.id) {
+            rows = await ReadingModel.getAllByUserId(targetUser.id, limit, offset);
+        } else if (!targetUser.is_profile_public) {
+            rows = [];
+        } else {
+            rows = await ReadingModel.getPublicByUserId(targetUser.id, limit, offset, requestingUserId);
         }
+        return rows.map(normalizeLog);
+    }
 
-        const profileData = {
+    async getProfile(username, requestingUserId) {
+        const targetUser = await this._findUserOrFail(username);
+        const isOwn = requestingUserId === targetUser.id;
+
+        const profile = {
             username: targetUser.username,
             bio: targetUser.bio,
             avatar_url: targetUser.avatar_url,
-            is_profile_public: !!targetUser.is_profile_public,
-            are_stats_public: !!targetUser.are_stats_public,
-            is_own_profile: requestingUserId === targetUser.id,
-            library: libraryData
+            is_profile_public: Boolean(targetUser.is_profile_public),
+            are_stats_public: Boolean(targetUser.are_stats_public),
+            is_own_profile: isOwn,
+            is_private_lock: !isOwn && !targetUser.is_profile_public,
+            library: await this._libraryFor(targetUser, requestingUserId, 1, DEFAULT_PAGE_SIZE),
         };
 
-        if (requestingUserId !== targetUser.id && !targetUser.is_profile_public) {
-            profileData.is_private_lock = true;
-        }
-
-        return profileData;
+        return profile;
     }
 
-    // Obtener biblioteca paginada del usuario
-    async getLibrary(targetUsername, requestingUserId, page = 1, limit = 10) {
-        const targetUser = await UserModel.findByUsername(targetUsername);
-        if (!targetUser) throw new Error('Usuario no encontrado');
-
-        const offset = (Math.max(1, parseInt(page)) - 1) * parseInt(limit);
-
-        // 1. Si es el dueño, ve todo (público y privado)
-        if (requestingUserId === targetUser.id) {
-            return await ReadingModel.getAllByUserId(targetUser.id, parseInt(limit), offset);
-        }
-
-        // 2. Si no es el dueño y el perfil es privado
-        if (!targetUser.is_profile_public) {
-            return [];
-        }
-
-        // 3. Perfil público: solo libros públicos
-        return await ReadingModel.getPublicByUserId(targetUser.id, parseInt(limit), offset);
+    async getLibrary(username, requestingUserId, page, limit) {
+        const targetUser = await this._findUserOrFail(username);
+        return this._libraryFor(targetUser, requestingUserId, page, limit);
     }
 
-    // Obtener estadísticas considerando privacidad
-    async getStats(targetUsername, requestingUserId) {
-        const targetUser = await UserModel.findByUsername(targetUsername);
-        if (!targetUser) throw new Error('Usuario no encontrado');
+    async getStats(username, requestingUserId) {
+        const targetUser = await this._findUserOrFail(username);
 
         const isOwn = requestingUserId === targetUser.id;
         if (!isOwn && (!targetUser.is_profile_public || !targetUser.are_stats_public)) {
@@ -63,11 +64,13 @@ class UserService {
         }
 
         const stats = await ReadingModel.getStatsByUserId(targetUser.id, !isOwn);
-        stats.is_private = false;
-        return stats;
+        return { ...stats, is_private: false };
     }
 
-    // Actualizar configuración de privacidad
+    async setReadingGoal(userId, targetBooks) {
+        return ReadingModel.setReadingGoal(userId, targetBooks);
+    }
+
     async updatePrivacySettings(userId, { is_profile_public, are_stats_public }) {
         await UserModel.updatePrivacy(userId, { is_profile_public, are_stats_public });
         return { success: true };
