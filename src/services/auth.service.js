@@ -3,7 +3,13 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const UserModel = require('../models/user.model');
 const db = require('../config/db');
-const { signToken, hashToken } = require('../utils/tokens');
+const {
+    signToken,
+    verifyToken,
+    hashToken,
+    generateRefreshToken,
+    REFRESH_TOKEN_TTL_DAYS,
+} = require('../utils/tokens');
 const { ConflictError, UnauthorizedError, ValidationError, isDuplicateEntry } = require('../utils/errors');
 const { sendMail } = require('../utils/mailer');
 const logger = require('../utils/logger');
@@ -13,6 +19,27 @@ const BCRYPT_ROUNDS = 10;
 // Hash ficticio para comparar cuando el usuario no existe: así el login tarda lo mismo
 // exista o no la cuenta, y no se pueden enumerar usuarios midiendo tiempos de respuesta.
 const DUMMY_PASSWORD_HASH = bcrypt.hashSync('dummy-password-for-timing-safety', BCRYPT_ROUNDS);
+
+
+/**
+ * Emite una sesión: token de acceso (JWT, 30 min) + refresh token (opaco, 60 días, rotativo).
+ * `familyId` agrupa los refresh tokens que nacen de un mismo inicio de sesión: si se detecta
+ * la reutilización de uno ya rotado (señal de robo), se revoca la familia completa.
+ */
+async function issueSession(userId, { conn = db, familyId = crypto.randomUUID() } = {}) {
+    const refreshToken = generateRefreshToken();
+    const [result] = await conn.execute(
+        `INSERT INTO refresh_tokens (user_id, token_hash, family_id, expires_at)
+         VALUES (?, ?, ?, NOW() + INTERVAL ? DAY)`,
+        [userId, hashToken(refreshToken), familyId, REFRESH_TOKEN_TTL_DAYS]
+    );
+    return {
+        session: { token: signToken(userId), refresh_token: refreshToken },
+        refreshId: result.insertId,
+    };
+}
+
+const SESSION_EXPIRED_MESSAGE = 'Tu sesión expiró. Inicia sesión de nuevo.';
 
 // Recuperación de contraseña
 const RESET_CODE_TTL_MINUTES = 15;
@@ -66,9 +93,10 @@ class AuthService {
             throw error;
         }
 
+        const { session } = await issueSession(userId);
         return {
             user: { id: userId, username, email },
-            token: signToken(userId),
+            ...session,
         };
     }
 
@@ -87,6 +115,7 @@ class AuthService {
             throw new UnauthorizedError('Credenciales inválidas');
         }
 
+        const { session } = await issueSession(user.id);
         return {
             user: {
                 id: user.id,
@@ -94,8 +123,65 @@ class AuthService {
                 email: user.email,
                 avatar: user.avatar_url,
             },
-            token: signToken(user.id),
+            ...session,
         };
+    }
+
+    /**
+     * Renueva la sesión con un refresh token (rotación: el usado queda revocado y se entrega
+     * uno nuevo de la misma familia). Si llega uno YA rotado, alguien lo copió: se revoca toda
+     * la familia y ambos —el ladrón y el usuario legítimo— deben volver a iniciar sesión.
+     */
+    async refresh({ refresh_token: refreshToken }) {
+        const conn = await db.getConnection();
+        let reuseDetected = false;
+        try {
+            await conn.beginTransaction();
+            const [rows] = await conn.execute(
+                `SELECT id, user_id, family_id, revoked_at, replaced_by_id, expires_at > NOW() AS alive
+                 FROM refresh_tokens WHERE token_hash = ? FOR UPDATE`,
+                [hashToken(refreshToken)]
+            );
+            const current = rows[0];
+
+            if (!current || !current.alive || current.revoked_at) {
+                if (current && current.revoked_at && current.replaced_by_id) {
+                    reuseDetected = true;
+                    await conn.execute(
+                        'UPDATE refresh_tokens SET revoked_at = NOW() WHERE family_id = ? AND revoked_at IS NULL',
+                        [current.family_id]
+                    );
+                }
+                await conn.commit();
+                if (reuseDetected) {
+                    logger.warn({ userId: current.user_id }, 'Refresh token reutilizado: familia revocada');
+                }
+                throw new UnauthorizedError(SESSION_EXPIRED_MESSAGE);
+            }
+
+            const user = await UserModel.findById(current.user_id);
+            if (!user) {
+                await conn.commit();
+                throw new UnauthorizedError(SESSION_EXPIRED_MESSAGE);
+            }
+
+            const { session, refreshId } = await issueSession(user.id, {
+                conn,
+                familyId: current.family_id,
+            });
+            await conn.execute(
+                'UPDATE refresh_tokens SET revoked_at = NOW(), replaced_by_id = ? WHERE id = ?',
+                [refreshId, current.id]
+            );
+            await conn.commit();
+            return session;
+        } catch (error) {
+            // Si ya se hizo commit, rollback no hace nada.
+            await conn.rollback().catch(() => {});
+            throw error;
+        } finally {
+            conn.release();
+        }
     }
 
     /**
@@ -174,6 +260,11 @@ class AuthService {
                 'UPDATE password_resets SET used_at = NOW() WHERE user_id = ? AND used_at IS NULL',
                 [user.id]
             );
+            // Cierra también las sesiones largas (refresh tokens) de todos los dispositivos.
+            await conn.execute(
+                'UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = ? AND revoked_at IS NULL',
+                [user.id]
+            );
             await conn.commit();
         } catch (error) {
             await conn.rollback();
@@ -182,6 +273,7 @@ class AuthService {
             conn.release();
         }
 
+        const { session } = await issueSession(user.id);
         return {
             user: {
                 id: user.id,
@@ -189,20 +281,47 @@ class AuthService {
                 email: user.email,
                 avatar: user.avatar_url,
             },
-            token: signToken(user.id),
+            ...session,
         };
     }
 
-    /** Revoca un token ya verificado por el middleware `protect`. */
-    async logout(token) {
-        const { exp } = jwt.decode(token);
-        const expiresAt = new Date(exp * 1000);
+    /**
+     * Cierra sesión. Funciona con el token de acceso (aunque ya haya vencido no hace falta:
+     * basta el refresh token) y/o con el refresh token, que se revoca junto a su familia.
+     * Exige al menos uno de los dos válidos (no se puede "cerrar" una sesión inexistente).
+     */
+    async logout({ accessToken, refreshToken }) {
+        let didSomething = false;
 
-        await db.execute(
-            'INSERT IGNORE INTO token_blacklist (token, expires_at) VALUES (?, ?)',
-            [hashToken(token), expiresAt]
-        );
+        if (accessToken) {
+            try {
+                verifyToken(accessToken);
+                const { exp } = jwt.decode(accessToken);
+                await db.execute(
+                    'INSERT IGNORE INTO token_blacklist (token, expires_at) VALUES (?, ?)',
+                    [hashToken(accessToken), new Date(exp * 1000)]
+                );
+                didSomething = true;
+            } catch {
+                // Token vencido o inválido: se ignora; puede bastar el refresh token.
+            }
+        }
 
+        if (refreshToken) {
+            const [rows] = await db.execute(
+                'SELECT family_id FROM refresh_tokens WHERE token_hash = ?',
+                [hashToken(refreshToken)]
+            );
+            if (rows[0]) {
+                await db.execute(
+                    'UPDATE refresh_tokens SET revoked_at = NOW() WHERE family_id = ? AND revoked_at IS NULL',
+                    [rows[0].family_id]
+                );
+                didSomething = true;
+            }
+        }
+
+        if (!didSomething) throw new UnauthorizedError('No autorizado, falta token');
         return { success: true };
     }
 }

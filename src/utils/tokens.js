@@ -2,7 +2,9 @@ const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 
 const JWT_ALGORITHM = 'HS256';
-const JWT_EXPIRES_IN = '7d';
+// Token de acceso corto: si se filtra, sirve poco tiempo. La sesión larga la da el refresh token.
+const JWT_EXPIRES_IN = '30m';
+const REFRESH_TOKEN_TTL_DAYS = 60;
 
 const signToken = (userId) =>
     jwt.sign({ id: userId }, process.env.JWT_SECRET, {
@@ -20,6 +22,9 @@ const verifyToken = (token) =>
  */
 const hashToken = (token) => crypto.createHash('sha256').update(token).digest('hex');
 
+/** Refresh token opaco (no es JWT): 256 bits aleatorios. En BD solo se guarda su SHA-256. */
+const generateRefreshToken = () => crypto.randomBytes(32).toString('base64url');
+
 /** Extrae el token de "Authorization: Bearer <token>". */
 const extractBearerToken = (req) => {
     const header = req.headers.authorization || '';
@@ -28,4 +33,11 @@ const extractBearerToken = (req) => {
     return token || null;
 };
 
-module.exports = { signToken, verifyToken, hashToken, extractBearerToken };
+module.exports = {
+    signToken,
+    verifyToken,
+    hashToken,
+    extractBearerToken,
+    generateRefreshToken,
+    REFRESH_TOKEN_TTL_DAYS,
+};

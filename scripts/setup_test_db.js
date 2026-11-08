@@ -40,6 +40,23 @@ async function setupTestDb() {
   `);
 
   await db.query(`
+    CREATE TABLE IF NOT EXISTS refresh_tokens (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id INT NOT NULL,
+      token_hash CHAR(64) NOT NULL UNIQUE,
+      family_id CHAR(36) NOT NULL,
+      expires_at DATETIME NOT NULL,
+      revoked_at DATETIME NULL,
+      replaced_by_id INT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_refresh_user (user_id),
+      INDEX idx_refresh_family (family_id),
+      INDEX idx_refresh_expires (expires_at),
+      CONSTRAINT fk_refresh_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `);
+
+  await db.query(`
     CREATE TABLE IF NOT EXISTS token_blacklist (
       token VARCHAR(500) PRIMARY KEY,
       expires_at DATETIME NOT NULL,

@@ -1,4 +1,5 @@
 const AuthService = require('../../services/auth.service');
+const { extractBearerToken } = require('../../utils/tokens');
 
 // Los bodies ya llegan validados y normalizados por el middleware `validate` (ver auth.routes.js).
 // Express 5 propaga automáticamente los errores de funciones async al manejador global.
@@ -14,8 +15,16 @@ const login = async (req, res) => {
 };
 
 const logout = async (req, res) => {
-    await AuthService.logout(req.token);
+    await AuthService.logout({
+        accessToken: extractBearerToken(req),
+        refreshToken: req.body.refresh_token,
+    });
     res.json({ message: 'Logout exitoso', success: true });
+};
+
+const refresh = async (req, res) => {
+    const session = await AuthService.refresh(req.body);
+    res.json(session);
 };
 
 const forgotPassword = async (req, res) => {
@@ -29,4 +38,4 @@ const resetPassword = async (req, res) => {
     res.json({ message: 'Contraseña actualizada', ...result });
 };
 
-module.exports = { register, login, logout, forgotPassword, resetPassword };
+module.exports = { register, login, logout, refresh, forgotPassword, resetPassword };

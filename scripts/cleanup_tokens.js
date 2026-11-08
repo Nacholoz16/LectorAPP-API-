@@ -7,6 +7,14 @@ async function setupMaintenance() {
   );
   console.log('Tokens expirados eliminados:', cleanResult.affectedRows);
 
+  // Refresh tokens vencidos o revocados hace más de 30 días (se guardan un tiempo para poder
+  // detectar la reutilización de uno ya rotado).
+  const [refreshResult] = await db.execute(
+    `DELETE FROM refresh_tokens
+     WHERE expires_at < NOW() OR revoked_at < (NOW() - INTERVAL 30 DAY)`
+  );
+  console.log('Refresh tokens viejos eliminados:', refreshResult.affectedRows);
+
   // Crear evento MySQL para limpieza automática (si el scheduler está habilitado)
   try {
     await db.execute('SET GLOBAL event_scheduler = ON');

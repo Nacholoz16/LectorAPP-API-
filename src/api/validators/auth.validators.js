@@ -42,4 +42,17 @@ const resetPasswordSchema = z.object({
     password: passwordSchema,
 });
 
-module.exports = { registerSchema, loginSchema, forgotPasswordSchema, resetPasswordSchema };
+const refreshTokenField = z.string().trim().min(20).max(200);
+
+const refreshSchema = z.object({ refresh_token: refreshTokenField });
+
+const logoutSchema = z.object({ refresh_token: refreshTokenField.optional() });
+
+module.exports = {
+    registerSchema,
+    loginSchema,
+    forgotPasswordSchema,
+    resetPasswordSchema,
+    refreshSchema,
+    logoutSchema,
+};

@@ -1,13 +1,14 @@
 const express = require('express');
 const rateLimit = require('express-rate-limit');
 const AuthController = require('../controllers/auth.controller');
-const { protect } = require('../middlewares/auth.middleware');
 const { validate } = require('../middlewares/validate');
 const {
     registerSchema,
     loginSchema,
     forgotPasswordSchema,
     resetPasswordSchema,
+    refreshSchema,
+    logoutSchema,
 } = require('../validators/auth.validators');
 
 const router = express.Router();
@@ -66,10 +67,22 @@ const resetLimiter = rateLimit({
     },
 });
 
+// Renovación de sesión: la app la hace sola cada ~30 min; el límite solo frena abusos.
+const refreshLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: 60,
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+    skip: () => isTest,
+    message: { error: 'Demasiadas renovaciones de sesión. Espera un momento.', code: 'RATE_LIMITED' },
+});
+
 router.post('/register', registerLimiter, validate({ body: registerSchema }), AuthController.register);
 router.post('/login', loginLimiter, validate({ body: loginSchema }), AuthController.login);
-// Solo se puede revocar un token válido (evita que cualquiera llene la blacklist con basura).
-router.post('/logout', protect, AuthController.logout);
+// Revoca el token de acceso (si aún es válido) y/o la familia del refresh token. Exige al menos
+// uno válido: así nadie puede llenar la blacklist con basura.
+router.post('/logout', validate({ body: logoutSchema }), AuthController.logout);
+router.post('/refresh', refreshLimiter, validate({ body: refreshSchema }), AuthController.refresh);
 router.post('/forgot-password', forgotLimiter, validate({ body: forgotPasswordSchema }), AuthController.forgotPassword);
 router.post('/reset-password', resetLimiter, validate({ body: resetPasswordSchema }), AuthController.resetPassword);
 

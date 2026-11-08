@@ -12,6 +12,7 @@
  * 5. Avisa de usernames que no cumplen el nuevo formato (no los modifica).
  * 6. Recuperación de contraseña: tabla password_resets y users.password_changed_at
  *    (segundos Unix; los JWT emitidos antes de ese momento dejan de valer).
+ * 7. Refresh tokens (sesiones largas rotativas): tabla refresh_tokens.
  */
 require('dotenv').config({ quiet: true });
 const db = require('../src/config/db');
@@ -110,6 +111,23 @@ async function migrate() {
         await db.query('ALTER TABLE users ADD COLUMN password_changed_at BIGINT UNSIGNED NULL');
         console.log('[6] users.password_changed_at creada');
     }
+
+    // 7. Refresh tokens
+    await db.query(`CREATE TABLE IF NOT EXISTS refresh_tokens (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id INT NOT NULL,
+      token_hash CHAR(64) NOT NULL UNIQUE,
+      family_id CHAR(36) NOT NULL,
+      expires_at DATETIME NOT NULL,
+      revoked_at DATETIME NULL,
+      replaced_by_id INT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_refresh_user (user_id),
+      INDEX idx_refresh_family (family_id),
+      INDEX idx_refresh_expires (expires_at),
+      CONSTRAINT fk_refresh_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )`);
+    console.log('[7] Tabla refresh_tokens lista');
 }
 
 migrate()

@@ -33,6 +33,7 @@ const BOOK_2 = { external_id: '/works/OL2W', title: 'Libro Privado', authors: 'O
 beforeAll(async () => {
     // La BD de test no tiene FKs: limpiar todas las tablas explícitamente.
     for (const table of [
+        'refresh_tokens',
         'password_resets',
         'token_blacklist',
         'reading_likes',
@@ -554,6 +555,77 @@ describe('API E2E', () => {
                 .post('/api/auth/reset-password')
                 .send({ email: 'test@jest.com', code, password: 'otraClave456' });
             expect(res.statusCode).toBe(400);
+        });
+    });
+
+    // ------------------------------------------------------------------
+    describe('Sesión: refresh tokens', () => {
+        const login = (username, password) =>
+            request(app).post('/api/auth/login').send({ username, password });
+        const refresh = (refresh_token) =>
+            request(app).post('/api/auth/refresh').send({ refresh_token });
+
+        test('login entrega token de acceso de 30 min y refresh token', async () => {
+            const res = await login('otro_user', 'password123');
+            expect(res.statusCode).toBe(200);
+            expect(typeof res.body.refresh_token).toBe('string');
+            const payload = JSON.parse(
+                Buffer.from(res.body.token.split('.')[1], 'base64url').toString()
+            );
+            expect(payload.exp - payload.iat).toBe(30 * 60);
+        });
+
+        test('refresh rota: entrega tokens nuevos y el acceso nuevo funciona', async () => {
+            const first = await login('otro_user', 'password123');
+            const res = await refresh(first.body.refresh_token);
+            expect(res.statusCode).toBe(200);
+            expect(res.body.refresh_token).not.toBe(first.body.refresh_token);
+            const feed = await request(app).get('/api/readings/feed').set(auth(res.body.token));
+            expect(feed.statusCode).toBe(200);
+        });
+
+        test('reutilizar un refresh ya rotado revoca toda la sesión (posible robo)', async () => {
+            const first = await login('otro_user', 'password123');
+            const second = await refresh(first.body.refresh_token);
+            expect(second.statusCode).toBe(200);
+
+            const reuse = await refresh(first.body.refresh_token);
+            expect(reuse.statusCode).toBe(401);
+            // El refresh legítimo más nuevo también quedó revocado.
+            const afterTheft = await refresh(second.body.refresh_token);
+            expect(afterTheft.statusCode).toBe(401);
+        });
+
+        test('logout solo con refresh token (acceso ya vencido) cierra la sesión', async () => {
+            const s = await login('otro_user', 'password123');
+            const out = await request(app)
+                .post('/api/auth/logout')
+                .send({ refresh_token: s.body.refresh_token });
+            expect(out.statusCode).toBe(200);
+            expect((await refresh(s.body.refresh_token)).statusCode).toBe(401);
+        });
+
+        test('refresh token inexistente → 401; con formato inválido → 400', async () => {
+            expect((await refresh('x'.repeat(43))).statusCode).toBe(401);
+            expect((await refresh('corto')).statusCode).toBe(400);
+        });
+
+        test('cambiar la contraseña por recuperación revoca los refresh tokens', async () => {
+            const s = await login('tester_jest', 'nuevaClave123');
+            expect(s.statusCode).toBe(200);
+
+            await db.query('UPDATE password_resets SET created_at = created_at - INTERVAL 2 MINUTE');
+            await request(app).post('/api/auth/forgot-password').send({ email: 'test@jest.com' });
+            const mail = [...outbox].reverse().find((m) => m.to === 'test@jest.com');
+            const code = mail.text.match(/\b(\d{6})\b/)[1];
+            const reset = await request(app)
+                .post('/api/auth/reset-password')
+                .send({ email: 'test@jest.com', code, password: 'claveFinal789' });
+            expect(reset.statusCode).toBe(200);
+            expect(typeof reset.body.refresh_token).toBe('string');
+
+            expect((await refresh(s.body.refresh_token)).statusCode).toBe(401);
+            expect((await refresh(reset.body.refresh_token)).statusCode).toBe(200);
         });
     });
 });
