@@ -24,6 +24,23 @@ async function setupTestDb() {
 
   try { await db.query('ALTER TABLE users ADD COLUMN are_stats_public TINYINT(1) NOT NULL DEFAULT 1'); } catch (_) {}
   try { await db.query('ALTER TABLE users ADD COLUMN password_changed_at BIGINT UNSIGNED NULL'); } catch (_) {}
+  try { await db.query("ALTER TABLE users ADD COLUMN role ENUM('user','admin') NOT NULL DEFAULT 'user'"); } catch (_) {}
+
+  // Auditoría de administración (mismo esquema que scripts/migrate.js, paso 8).
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS admin_actions (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      admin_id INT NULL,
+      action VARCHAR(50) NOT NULL,
+      target_type VARCHAR(30) NOT NULL,
+      target_id INT NULL,
+      note VARCHAR(500) NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_admin_actions_created (created_at),
+      INDEX idx_admin_actions_target (target_type, target_id),
+      CONSTRAINT fk_admin_actions_admin FOREIGN KEY (admin_id) REFERENCES users(id) ON DELETE SET NULL
+    )
+  `);
 
   await db.query(`
     CREATE TABLE IF NOT EXISTS password_resets (

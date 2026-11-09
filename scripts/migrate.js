@@ -13,6 +13,8 @@
  * 6. Recuperación de contraseña: tabla password_resets y users.password_changed_at
  *    (segundos Unix; los JWT emitidos antes de ese momento dejan de valer).
  * 7. Refresh tokens (sesiones largas rotativas): tabla refresh_tokens.
+ * 8. Administración (tarea 4.1): users.role ('user' | 'admin'; se asigna solo por SQL o con
+ *    scripts/grant_admin.js) y tabla admin_actions (auditoría de cada acción de admin).
  */
 require('dotenv').config({ quiet: true });
 const db = require('../src/config/db');
@@ -128,6 +130,29 @@ async function migrate() {
       CONSTRAINT fk_refresh_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     )`);
     console.log('[7] Tabla refresh_tokens lista');
+
+    // 8. Rol de administrador y auditoría
+    if (await columnExists('users', 'role')) {
+        console.log('[8] users.role ya existe');
+    } else {
+        await db.query("ALTER TABLE users ADD COLUMN role ENUM('user','admin') NOT NULL DEFAULT 'user'");
+        console.log('[8] users.role creada');
+    }
+    // admin_id con SET NULL (no CASCADE): si se borra la cuenta del admin, el historial se conserva.
+    // target_id no tiene FK porque apunta a distintas tablas según target_type.
+    await db.query(`CREATE TABLE IF NOT EXISTS admin_actions (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      admin_id INT NULL,
+      action VARCHAR(50) NOT NULL,
+      target_type VARCHAR(30) NOT NULL,
+      target_id INT NULL,
+      note VARCHAR(500) NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_admin_actions_created (created_at),
+      INDEX idx_admin_actions_target (target_type, target_id),
+      CONSTRAINT fk_admin_actions_admin FOREIGN KEY (admin_id) REFERENCES users(id) ON DELETE SET NULL
+    )`);
+    console.log('[8] Tabla admin_actions lista');
 }
 
 migrate()

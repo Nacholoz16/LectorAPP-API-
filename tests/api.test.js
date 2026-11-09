@@ -33,6 +33,7 @@ const BOOK_2 = { external_id: '/works/OL2W', title: 'Libro Privado', authors: 'O
 beforeAll(async () => {
     // La BD de test no tiene FKs: limpiar todas las tablas explícitamente.
     for (const table of [
+        'admin_actions',
         'refresh_tokens',
         'password_resets',
         'token_blacklist',
@@ -637,6 +638,226 @@ describe('API E2E', () => {
 
             expect((await refresh(s.body.refresh_token)).statusCode).toBe(401);
             expect((await refresh(reset.body.refresh_token)).statusCode).toBe(200);
+        });
+    });
+
+    // ------------------------------------------------------------------
+    describe('Administración (rol y auditoría)', () => {
+        let adminToken;
+        let adminId;
+        let normalToken;
+        let normalId;
+
+        const roleOf = async (id) => {
+            const [rows] = await db.query('SELECT role FROM users WHERE id = ?', [id]);
+            return rows[0].role;
+        };
+
+        // Rutas de muestra: existentes o no, GET/POST/DELETE. Para un no-admin, todas deben
+        // responder igual (401/403) sin revelar cuáles existen.
+        const ADMIN_ROUTES = [
+            ['get', '/api/admin'],
+            ['get', '/api/admin/users'],
+            ['get', '/api/admin/no-existe/de/verdad'],
+            ['post', '/api/admin/users/1/suspend'],
+            ['post', '/api/admin/reports'],
+            ['delete', '/api/admin/readings/1'],
+        ];
+
+        beforeAll(async () => {
+            const a = await request(app)
+                .post('/api/auth/register')
+                .send({ username: 'admin_jest', email: 'admin@jest.com', password: 'password123' });
+            adminToken = a.body.token;
+            adminId = a.body.user.id;
+
+            const n = await request(app)
+                .post('/api/auth/register')
+                .send({ username: 'normal_jest', email: 'normal@jest.com', password: 'password123' });
+            normalToken = n.body.token;
+            normalId = n.body.user.id;
+
+            // D3: el rol solo se asigna por SQL.
+            await db.query("UPDATE users SET role = 'admin' WHERE id = ?", [adminId]);
+        });
+
+        test('una cuenta nueva tiene role = user', async () => {
+            expect(await roleOf(normalId)).toBe('user');
+        });
+
+        test('sin token → 401 en todo /admin/*', async () => {
+            for (const [method, url] of ADMIN_ROUTES) {
+                const res = await request(app)[method](url).send({});
+                expect(res.statusCode).toBe(401);
+                expect(res.body.code).toBe('UNAUTHORIZED');
+            }
+        });
+
+        test('usuario normal → 403 FORBIDDEN en todo /admin/* (exista la ruta o no)', async () => {
+            for (const [method, url] of ADMIN_ROUTES) {
+                const res = await request(app)[method](url).set(auth(normalToken)).send({ note: 'x' });
+                expect(res.statusCode).toBe(403);
+                expect(res.body).toEqual({ error: expect.any(String), code: 'FORBIDDEN' });
+            }
+        });
+
+        test('admin → pasa requireAdmin (ruta inexistente da 404 normal)', async () => {
+            for (const [method, url] of ADMIN_ROUTES) {
+                const res = await request(app)[method](url).set(auth(adminToken)).send({});
+                expect(res.statusCode).toBe(404);
+                expect(res.body.code).toBe('NOT_FOUND');
+            }
+        });
+
+        test('el rol se lee de la BD en cada petición: quitarlo tiene efecto inmediato', async () => {
+            await db.query("UPDATE users SET role = 'user' WHERE id = ?", [adminId]);
+            const revoked = await request(app).get('/api/admin/users').set(auth(adminToken));
+            expect(revoked.statusCode).toBe(403);
+
+            await db.query("UPDATE users SET role = 'admin' WHERE id = ?", [adminId]);
+            const restored = await request(app).get('/api/admin/users').set(auth(adminToken));
+            expect(restored.statusCode).toBe(404);
+        });
+
+        test('el JWT no lleva el rol (no se confía en claims)', async () => {
+            const payload = JSON.parse(Buffer.from(adminToken.split('.')[1], 'base64url').toString());
+            expect(payload).not.toHaveProperty('role');
+        });
+
+        test('registro con role: admin → se ignora, la cuenta queda como user', async () => {
+            const res = await request(app)
+                .post('/api/auth/register')
+                .send({ username: 'colado_jest', email: 'colado@jest.com', password: 'password123', role: 'admin' });
+            expect(res.statusCode).toBe(201);
+            expect(res.body.user).not.toHaveProperty('role');
+            expect(await roleOf(res.body.user.id)).toBe('user');
+        });
+
+        test('login con role en el body → se ignora', async () => {
+            const res = await request(app)
+                .post('/api/auth/login')
+                .send({ username: 'normal_jest', password: 'password123', role: 'admin' });
+            expect(res.statusCode).toBe(200);
+            expect(await roleOf(normalId)).toBe('user');
+        });
+
+        test('PUT /users/privacy con role → 400 y el rol no cambia', async () => {
+            const res = await request(app)
+                .put('/api/users/privacy')
+                .set(auth(normalToken))
+                .send({ is_profile_public: true, role: 'admin' });
+            expect(res.statusCode).toBe(400);
+            expect(res.body.code).toBe('VALIDATION_ERROR');
+            expect(await roleOf(normalId)).toBe('user');
+        });
+
+        test('POST /users/goal con role → se ignora', async () => {
+            const res = await request(app)
+                .post('/api/users/goal')
+                .set(auth(normalToken))
+                .send({ target_books: 5, role: 'admin' });
+            expect(res.statusCode).toBe(200);
+            expect(await roleOf(normalId)).toBe('user');
+        });
+
+        test('el perfil público no expone el rol', async () => {
+            const res = await request(app).get('/api/users/admin_jest').set(auth(normalToken));
+            expect(res.statusCode).toBe(200);
+            expect(res.body).not.toHaveProperty('role');
+        });
+
+        test('logAdminAction inserta la fila (quién, qué, a quién, nota recortada)', async () => {
+            const { logAdminAction } = require('../src/services/adminAudit.service');
+            const id = await logAdminAction({
+                adminId,
+                action: 'user.suspend',
+                targetType: 'user',
+                targetId: normalId,
+                note: '  spam reiterado  ',
+            });
+            const [rows] = await db.query('SELECT * FROM admin_actions WHERE id = ?', [id]);
+            expect(rows[0]).toMatchObject({
+                admin_id: adminId,
+                action: 'user.suspend',
+                target_type: 'user',
+                target_id: normalId,
+                note: 'spam reiterado',
+            });
+            expect(rows[0].created_at).toBeInstanceOf(Date);
+
+            // Nota vacía o ausente → NULL.
+            const id2 = await logAdminAction({ adminId, action: 'report.dismiss', targetType: 'report', note: '   ' });
+            const [rows2] = await db.query('SELECT note, target_id FROM admin_actions WHERE id = ?', [id2]);
+            expect(rows2[0]).toEqual({ note: null, target_id: null });
+        });
+
+        test('logAdminAction dentro de una transacción: se revierte o confirma con ella', async () => {
+            const { logAdminAction } = require('../src/services/adminAudit.service');
+            const count = async () => {
+                const [rows] = await db.query("SELECT COUNT(*) AS n FROM admin_actions WHERE action = 'log.hide'");
+                return rows[0].n;
+            };
+
+            const conn = await db.getConnection();
+            try {
+                await conn.beginTransaction();
+                await logAdminAction({ adminId, action: 'log.hide', targetType: 'reading_log', targetId: 1 }, conn);
+                await conn.rollback();
+                expect(await count()).toBe(0);
+
+                await conn.beginTransaction();
+                await logAdminAction({ adminId, action: 'log.hide', targetType: 'reading_log', targetId: 1 }, conn);
+                await conn.commit();
+                expect(await count()).toBe(1);
+            } finally {
+                conn.release();
+            }
+        });
+
+        test('logAdminAction valida los datos (nota > 500, acción o admin inválidos)', async () => {
+            const { logAdminAction } = require('../src/services/adminAudit.service');
+            const { ValidationError } = require('../src/utils/errors');
+            const base = { adminId, action: 'user.suspend', targetType: 'user', targetId: normalId };
+
+            await expect(logAdminAction({ ...base, note: 'x'.repeat(501) })).rejects.toBeInstanceOf(ValidationError);
+            await expect(logAdminAction({ ...base, action: 'DROP TABLE' })).rejects.toBeInstanceOf(ValidationError);
+            await expect(logAdminAction({ ...base, adminId: undefined })).rejects.toBeInstanceOf(ValidationError);
+            await expect(logAdminAction({ ...base, note: 'x'.repeat(500) })).resolves.toEqual(expect.any(Number));
+        });
+
+        test('si se borra la cuenta del admin, la auditoría se conserva (admin_id = NULL)', async () => {
+            const tmp = await request(app)
+                .post('/api/auth/register')
+                .send({ username: 'admin_tmp', email: 'admin_tmp@jest.com', password: 'password123' });
+            const tmpId = tmp.body.user.id;
+            const { logAdminAction } = require('../src/services/adminAudit.service');
+            const id = await logAdminAction({ adminId: tmpId, action: 'user.warn', targetType: 'user', targetId: normalId });
+
+            await db.query('DELETE FROM refresh_tokens WHERE user_id = ?', [tmpId]);
+            await db.query('DELETE FROM users WHERE id = ?', [tmpId]);
+            const [rows] = await db.query('SELECT admin_id, action FROM admin_actions WHERE id = ?', [id]);
+            expect(rows[0]).toEqual({ admin_id: null, action: 'user.warn' });
+        });
+
+        test('rate limit propio de /admin/*: 429 RATE_LIMITED por cuenta', async () => {
+            const express = require('express');
+            const { createAdminLimiter } = require('../src/api/middlewares/admin.middleware');
+            // Mini app con el mismo limitador pero límite 2 (el real se omite en NODE_ENV=test).
+            const mini = express();
+            mini.use((req, res, next) => {
+                req.user = { id: Number(req.get('x-user')) };
+                next();
+            });
+            mini.use(createAdminLimiter({ limit: 2 }));
+            mini.get('/x', (req, res) => res.json({ ok: true }));
+
+            expect((await request(mini).get('/x').set('x-user', '1')).statusCode).toBe(200);
+            expect((await request(mini).get('/x').set('x-user', '1')).statusCode).toBe(200);
+            const limited = await request(mini).get('/x').set('x-user', '1');
+            expect(limited.statusCode).toBe(429);
+            expect(limited.body.code).toBe('RATE_LIMITED');
+            // El límite es por cuenta: otra cuenta no está afectada.
+            expect((await request(mini).get('/x').set('x-user', '2')).statusCode).toBe(200);
         });
     });
 });

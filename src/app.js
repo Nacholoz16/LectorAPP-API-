@@ -66,6 +66,8 @@ app.use('/api/auth', require('./api/routes/auth.routes'));
 app.use('/api/books', require('./api/routes/book.routes'));
 app.use('/api/readings', require('./api/routes/reading.routes'));
 app.use('/api/users', require('./api/routes/user.routes'));
+// Administración: protect → rate limit propio → requireAdmin para todo /api/admin/*.
+app.use('/api/admin', require('./api/routes/admin.routes'));
 
 app.get('/api/health', async (req, res) => {
     try {

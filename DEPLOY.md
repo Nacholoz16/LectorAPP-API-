@@ -82,3 +82,33 @@ Logs en el servidor: `docker logs -f lectorAPI`. Son líneas JSON con método, U
 ## Mantenimiento
 
 - `docker exec lectorAPI npm run cleanup` borra los tokens revocados que ya expiraron.
+
+## Administrador (`users.role`)
+
+Todo `/api/admin/*` exige token + `users.role = 'admin'` (el rol se lee de la BD en cada petición;
+si se quita, la sesión del admin pierde el acceso en la petición siguiente). **Ningún endpoint puede
+cambiar el rol**: se asigna solo así. Cada acción de moderación queda en la tabla `admin_actions`.
+
+El administrador es `test001` (decisión D3). Tras el deploy que crea la columna (la migración del
+paso 3 de "Deploy normal" la añade), en el servidor:
+
+```bash
+# 1. Comprobar que la cuenta existe en producción
+docker exec lectorAPI npm run --silent admin:grant -- test001
+#    → "Listo: ... ahora es administrador" o "ya es administrador" (idempotente).
+#    Si la cuenta no existe, avisa y sale con código 1 sin tocar nada.
+```
+
+Alternativa por SQL directo:
+
+```bash
+docker exec -it lectorDB sh -c 'mysql -u root -p"$MYSQL_ROOT_PASSWORD" anti_social_reader'
+```
+```sql
+SELECT id, username, role FROM users WHERE username = 'test001';   -- confirmar que existe
+UPDATE users SET role = 'admin' WHERE username = 'test001';
+-- Quitar el rol (efecto inmediato):
+UPDATE users SET role = 'user' WHERE username = 'test001';
+```
+
+En local: `npm run admin:grant` (por defecto `test001`; usa la BD del `.env`).
