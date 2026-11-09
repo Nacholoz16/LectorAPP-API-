@@ -454,6 +454,32 @@ describe('API E2E', () => {
         });
     });
 
+    describe('CORS', () => {
+        test('la web nueva (lectorapp.nacholoz3d.cl) está permitida, también en el preflight', async () => {
+            const origin = 'https://lectorapp.nacholoz3d.cl';
+            const res = await request(app).get('/api/health').set('Origin', origin);
+            expect(res.headers['access-control-allow-origin']).toBe(origin);
+
+            const pre = await request(app)
+                .options('/api/auth/login')
+                .set('Origin', origin)
+                .set('Access-Control-Request-Method', 'POST')
+                .set('Access-Control-Request-Headers', 'content-type,authorization');
+            expect(pre.statusCode).toBe(204);
+            expect(pre.headers['access-control-allow-origin']).toBe(origin);
+        });
+
+        test('los orígenes existentes siguen permitidos', async () => {
+            const res = await request(app).get('/api/health').set('Origin', 'https://nacholoz3d.cl');
+            expect(res.headers['access-control-allow-origin']).toBe('https://nacholoz3d.cl');
+        });
+
+        test('un origen desconocido no recibe Access-Control-Allow-Origin', async () => {
+            const res = await request(app).get('/api/health').set('Origin', 'https://evil.example.com');
+            expect(res.headers['access-control-allow-origin']).toBeUndefined();
+        });
+    });
+
     // ------------------------------------------------------------------
     // Va al final: invalida ownerToken al cambiar la contraseña.
     describe('Recuperar contraseña', () => {

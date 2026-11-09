@@ -25,6 +25,8 @@ app.use(cors({
     origin: [
         'https://nacholoz3d.cl',
         'https://www.nacholoz3d.cl',
+        // Web nueva (repo lectorapp-web): páginas públicas y, más adelante, el panel /admin.
+        'https://lectorapp.nacholoz3d.cl',
         'http://localhost:3000',
         'http://localhost:4200',
     ],
