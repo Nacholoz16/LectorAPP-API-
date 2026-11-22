@@ -31,6 +31,16 @@ class ForbiddenError extends AppError {
     }
 }
 
+/**
+ * 403 con código propio: el cliente lo distingue de un FORBIDDEN normal para pedir que el
+ * usuario acepte los términos vigentes y reintentar (tarea 1.3).
+ */
+class TermsRequiredError extends AppError {
+    constructor(message = 'Para publicar necesitas aceptar los Términos y la Política de privacidad.') {
+        super(message, 403, 'TERMS_REQUIRED');
+    }
+}
+
 class NotFoundError extends AppError {
     constructor(message = 'Recurso no encontrado') {
         super(message, 404, 'NOT_FOUND');
@@ -51,6 +61,7 @@ module.exports = {
     ValidationError,
     UnauthorizedError,
     ForbiddenError,
+    TermsRequiredError,
     NotFoundError,
     ConflictError,
     isDuplicateEntry,

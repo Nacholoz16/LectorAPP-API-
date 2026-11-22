@@ -40,7 +40,7 @@ La llave por defecto se busca en `%USERPROFILE%\Downloads\LLAVE SERVER 129.151.9
 deploy\deploy.bat <commit-anterior>
 ```
 
-`git log --oneline` muestra los commits. La migración solo crea índices y convierte tokens a hash, así que no hace falta revertirla.
+`git log --oneline` muestra los commits. La migración solo añade columnas, tablas e índices y convierte tokens a hash, así que no hace falta revertirla.
 
 ## Respaldo de la base de datos
 
@@ -112,3 +112,23 @@ UPDATE users SET role = 'user' WHERE username = 'test001';
 ```
 
 En local: `npm run admin:grant` (por defecto `test001`; usa la BD del `.env`).
+
+## Términos y condiciones (`users.terms_version`)
+
+La versión vigente vive en `src/config/terms.js` (`CURRENT_TERMS_VERSION`, hoy `2026-11`) y debe
+coincidir con la que muestran las páginas legales de la web (`/terminos`, `/privacidad`).
+
+- El registro exige `accept_terms: true` y guarda versión y fecha. **Una app anterior a la 1.1.0 no
+  envía ese campo: no podrá crear cuentas en cuanto se despliegue esta API** (sí iniciar sesión y
+  usar el resto). Desplegar la API junto con la publicación de la app nueva.
+- Crear o dejar pública una lectura sin la versión vigente aceptada → `403 TERMS_REQUIRED`
+  (`POST /api/account/terms` la acepta). Las cuentas existentes quedan con `terms_version = NULL`
+  tras la migración; sus lecturas públicas no se modifican.
+- **Cambiar `CURRENT_TERMS_VERSION`** obliga a todos a volver a aceptar antes de publicar: hacerlo
+  solo cuando cambie el contenido de las reglas, a la vez que la web.
+
+Consultar quién aceptó qué:
+
+```sql
+SELECT terms_version, COUNT(*) FROM users GROUP BY terms_version;
+```

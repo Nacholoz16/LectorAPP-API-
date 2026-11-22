@@ -25,6 +25,9 @@ async function setupTestDb() {
   try { await db.query('ALTER TABLE users ADD COLUMN are_stats_public TINYINT(1) NOT NULL DEFAULT 1'); } catch (_) {}
   try { await db.query('ALTER TABLE users ADD COLUMN password_changed_at BIGINT UNSIGNED NULL'); } catch (_) {}
   try { await db.query("ALTER TABLE users ADD COLUMN role ENUM('user','admin') NOT NULL DEFAULT 'user'"); } catch (_) {}
+  // Aceptación de términos (mismo esquema que scripts/migrate.js, paso 9).
+  try { await db.query('ALTER TABLE users ADD COLUMN terms_version VARCHAR(20) NULL'); } catch (_) {}
+  try { await db.query('ALTER TABLE users ADD COLUMN terms_accepted_at DATETIME NULL'); } catch (_) {}
 
   // Auditoría de administración (mismo esquema que scripts/migrate.js, paso 8).
   await db.query(`

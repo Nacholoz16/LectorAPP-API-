@@ -12,6 +12,7 @@ const {
 } = require('../utils/tokens');
 const { ConflictError, UnauthorizedError, ValidationError, isDuplicateEntry } = require('../utils/errors');
 const { sendMail } = require('../utils/mailer');
+const { CURRENT_TERMS_VERSION, termsStatus } = require('../config/terms');
 const logger = require('../utils/logger');
 
 const BCRYPT_ROUNDS = 10;
@@ -72,6 +73,7 @@ const resetEmail = (username, code) => {
 
 class AuthService {
     /** `data` ya viene validado y normalizado (email en minúsculas) por registerSchema. */
+    /** `accept_terms` ya llega validado como `true` (registerSchema exige la casilla). */
     async registerUser({ username, email, password }) {
         const [emailExists, usernameExists] = await Promise.all([
             UserModel.findByEmail(email),
@@ -84,7 +86,12 @@ class AuthService {
 
         let userId;
         try {
-            userId = await UserModel.create({ username, email, passwordHash });
+            userId = await UserModel.create({
+                username,
+                email,
+                passwordHash,
+                termsVersion: CURRENT_TERMS_VERSION,
+            });
         } catch (error) {
             // Dos registros simultáneos con el mismo email/username: lo resuelve el UNIQUE de la BD.
             if (isDuplicateEntry(error)) {
@@ -95,7 +102,7 @@ class AuthService {
 
         const { session } = await issueSession(userId);
         return {
-            user: { id: userId, username, email },
+            user: { id: userId, username, email, ...termsStatus(CURRENT_TERMS_VERSION) },
             ...session,
         };
     }
@@ -122,6 +129,7 @@ class AuthService {
                 username: user.username,
                 email: user.email,
                 avatar: user.avatar_url,
+                ...termsStatus(user.terms_version),
             },
             ...session,
         };
@@ -280,6 +288,7 @@ class AuthService {
                 username: user.username,
                 email: user.email,
                 avatar: user.avatar_url,
+                ...termsStatus(user.terms_version),
             },
             ...session,
         };

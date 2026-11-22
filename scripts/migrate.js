@@ -15,6 +15,9 @@
  * 7. Refresh tokens (sesiones largas rotativas): tabla refresh_tokens.
  * 8. Administración (tarea 4.1): users.role ('user' | 'admin'; se asigna solo por SQL o con
  *    scripts/grant_admin.js) y tabla admin_actions (auditoría de cada acción de admin).
+ * 9. Aceptación de términos (tarea 1.3): users.terms_version y users.terms_accepted_at.
+ *    Quedan en NULL para las cuentas existentes (deberán aceptar antes de publicar); sus
+ *    lecturas públicas actuales NO se modifican.
  */
 require('dotenv').config({ quiet: true });
 const db = require('../src/config/db');
@@ -153,6 +156,20 @@ async function migrate() {
       CONSTRAINT fk_admin_actions_admin FOREIGN KEY (admin_id) REFERENCES users(id) ON DELETE SET NULL
     )`);
     console.log('[8] Tabla admin_actions lista');
+
+    // 9. Aceptación de términos
+    if (await columnExists('users', 'terms_version')) {
+        console.log('[9] users.terms_version ya existe');
+    } else {
+        await db.query('ALTER TABLE users ADD COLUMN terms_version VARCHAR(20) NULL');
+        console.log('[9] users.terms_version creada');
+    }
+    if (await columnExists('users', 'terms_accepted_at')) {
+        console.log('[9] users.terms_accepted_at ya existe');
+    } else {
+        await db.query('ALTER TABLE users ADD COLUMN terms_accepted_at DATETIME NULL');
+        console.log('[9] users.terms_accepted_at creada');
+    }
 }
 
 migrate()

@@ -2,6 +2,7 @@ const UserModel = require('../models/user.model');
 const ReadingModel = require('../models/reading.model');
 const { normalizeLog } = require('./reading.service');
 const { NotFoundError } = require('../utils/errors');
+const { termsStatus } = require('../config/terms');
 
 const DEFAULT_PAGE_SIZE = 10;
 
@@ -45,6 +46,9 @@ class UserService {
             is_own_profile: isOwn,
             is_private_lock: !isOwn && !targetUser.is_profile_public,
             library: await this._libraryFor(targetUser, requestingUserId, 1, DEFAULT_PAGE_SIZE),
+            // Solo en el perfil propio: la app sabe si debe pedir aceptar los términos antes de
+            // publicar (sesiones abiertas antes de la 1.3 no vuelven a pasar por el login).
+            ...(isOwn && termsStatus(targetUser.terms_version)),
         };
 
         return profile;

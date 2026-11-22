@@ -63,7 +63,7 @@ describe('API E2E', () => {
         test('register: crea usuario y normaliza el email a minúsculas', async () => {
             const res = await request(app)
                 .post('/api/auth/register')
-                .send({ username: 'tester_jest', email: '  Test@Jest.com ', password: 'password123' });
+                .send({ username: 'tester_jest', email: '  Test@Jest.com ', password: 'password123', accept_terms: true });
 
             expect(res.statusCode).toBe(201);
             expect(res.body).toHaveProperty('token');
@@ -74,7 +74,7 @@ describe('API E2E', () => {
         test('register: segundo usuario para pruebas de permisos', async () => {
             const res = await request(app)
                 .post('/api/auth/register')
-                .send({ username: 'otro_user', email: 'otro@jest.com', password: 'password123' });
+                .send({ username: 'otro_user', email: 'otro@jest.com', password: 'password123', accept_terms: true });
             expect(res.statusCode).toBe(201);
             otherToken = res.body.token;
         });
@@ -82,7 +82,7 @@ describe('API E2E', () => {
         test('register: email duplicado → 409', async () => {
             const res = await request(app)
                 .post('/api/auth/register')
-                .send({ username: 'nuevo_user', email: 'TEST@jest.com', password: 'password123' });
+                .send({ username: 'nuevo_user', email: 'TEST@jest.com', password: 'password123', accept_terms: true });
             expect(res.statusCode).toBe(409);
             expect(res.body.code).toBe('CONFLICT');
         });
@@ -90,7 +90,7 @@ describe('API E2E', () => {
         test('register: username con caracteres no permitidos → 400', async () => {
             const res = await request(app)
                 .post('/api/auth/register')
-                .send({ username: 'bad/name', email: 'bad@jest.com', password: 'password123' });
+                .send({ username: 'bad/name', email: 'bad@jest.com', password: 'password123', accept_terms: true });
             expect(res.statusCode).toBe(400);
             expect(res.body.code).toBe('VALIDATION_ERROR');
         });
@@ -98,7 +98,7 @@ describe('API E2E', () => {
         test('register: contraseña corta → 400', async () => {
             const res = await request(app)
                 .post('/api/auth/register')
-                .send({ username: 'corto_pw', email: 'corto@jest.com', password: '123' });
+                .send({ username: 'corto_pw', email: 'corto@jest.com', password: '123', accept_terms: true });
             expect(res.statusCode).toBe(400);
         });
 
@@ -693,13 +693,13 @@ describe('API E2E', () => {
         beforeAll(async () => {
             const a = await request(app)
                 .post('/api/auth/register')
-                .send({ username: 'admin_jest', email: 'admin@jest.com', password: 'password123' });
+                .send({ username: 'admin_jest', email: 'admin@jest.com', password: 'password123', accept_terms: true });
             adminToken = a.body.token;
             adminId = a.body.user.id;
 
             const n = await request(app)
                 .post('/api/auth/register')
-                .send({ username: 'normal_jest', email: 'normal@jest.com', password: 'password123' });
+                .send({ username: 'normal_jest', email: 'normal@jest.com', password: 'password123', accept_terms: true });
             normalToken = n.body.token;
             normalId = n.body.user.id;
 
@@ -753,7 +753,7 @@ describe('API E2E', () => {
         test('registro con role: admin → se ignora, la cuenta queda como user', async () => {
             const res = await request(app)
                 .post('/api/auth/register')
-                .send({ username: 'colado_jest', email: 'colado@jest.com', password: 'password123', role: 'admin' });
+                .send({ username: 'colado_jest', email: 'colado@jest.com', password: 'password123', accept_terms: true, role: 'admin' });
             expect(res.statusCode).toBe(201);
             expect(res.body.user).not.toHaveProperty('role');
             expect(await roleOf(res.body.user.id)).toBe('user');
@@ -762,7 +762,7 @@ describe('API E2E', () => {
         test('login con role en el body → se ignora', async () => {
             const res = await request(app)
                 .post('/api/auth/login')
-                .send({ username: 'normal_jest', password: 'password123', role: 'admin' });
+                .send({ username: 'normal_jest', password: 'password123', accept_terms: true, role: 'admin' });
             expect(res.statusCode).toBe(200);
             expect(await roleOf(normalId)).toBe('user');
         });
@@ -854,7 +854,7 @@ describe('API E2E', () => {
         test('si se borra la cuenta del admin, la auditoría se conserva (admin_id = NULL)', async () => {
             const tmp = await request(app)
                 .post('/api/auth/register')
-                .send({ username: 'admin_tmp', email: 'admin_tmp@jest.com', password: 'password123' });
+                .send({ username: 'admin_tmp', email: 'admin_tmp@jest.com', password: 'password123', accept_terms: true });
             const tmpId = tmp.body.user.id;
             const { logAdminAction } = require('../src/services/adminAudit.service');
             const id = await logAdminAction({ adminId: tmpId, action: 'user.warn', targetType: 'user', targetId: normalId });
@@ -884,6 +884,244 @@ describe('API E2E', () => {
             expect(limited.body.code).toBe('RATE_LIMITED');
             // El límite es por cuenta: otra cuenta no está afectada.
             expect((await request(mini).get('/x').set('x-user', '2')).statusCode).toBe(200);
+        });
+    });
+
+    // ------------------------------------------------------------------
+    describe('Términos: aceptación obligatoria (1.3)', () => {
+        const { CURRENT_TERMS_VERSION } = require('../src/config/terms');
+        const BOOK_T1 = { external_id: '/works/OLT1W', title: 'Libro Términos 1', page_count: 50 };
+        const BOOK_T2 = { external_id: '/works/OLT2W', title: 'Libro Términos 2', page_count: 50 };
+        const BOOK_T3 = { external_id: '/works/OLT3W', title: 'Libro Términos 3', page_count: 50 };
+        const BOOK_T4 = { external_id: '/works/OLT4W', title: 'Libro Términos 4', page_count: 50 };
+
+        let legacyToken;
+        let legacyId;
+        let legacyPublicLogId;
+        let legacyPrivateLogId;
+
+        const termsRow = async (id) => {
+            const [rows] = await db.query('SELECT terms_version, terms_accepted_at FROM users WHERE id = ?', [id]);
+            return rows[0];
+        };
+        const isPublicInDb = async (logId) => {
+            const [rows] = await db.query('SELECT is_log_public FROM reading_logs WHERE id = ?', [logId]);
+            return rows[0].is_log_public;
+        };
+        const createLog = (token, bookData, logData) =>
+            request(app).post('/api/readings').set(auth(token)).send({ bookData, logData });
+
+        beforeAll(async () => {
+            // Cuenta "antigua": registrada antes de la 1.3. Se crea normal (con términos), publica
+            // una lectura y luego se borra su aceptación por SQL, como quedan tras la migración.
+            const res = await request(app)
+                .post('/api/auth/register')
+                .send({ username: 'legacy_jest', email: 'legacy@jest.com', password: 'password123', accept_terms: true });
+            legacyToken = res.body.token;
+            legacyId = res.body.user.id;
+            const pub = await createLog(legacyToken, BOOK_T1, { status: 'terminado', review_text: 'Antigua', is_log_public: true });
+            legacyPublicLogId = pub.body.logId;
+            await db.query('UPDATE users SET terms_version = NULL, terms_accepted_at = NULL WHERE id = ?', [legacyId]);
+        });
+
+        test('registro sin accept_terms → 400 VALIDATION_ERROR y no crea la cuenta', async () => {
+            const res = await request(app)
+                .post('/api/auth/register')
+                .send({ username: 'sin_terms', email: 'sin_terms@jest.com', password: 'password123' });
+            expect(res.statusCode).toBe(400);
+            expect(res.body.code).toBe('VALIDATION_ERROR');
+            expect(res.body.error).toMatch(/Términos/);
+            const [rows] = await db.query("SELECT 1 FROM users WHERE username = 'sin_terms'");
+            expect(rows).toHaveLength(0);
+        });
+
+        test('registro con accept_terms false, "true" (string) o 1 → 400', async () => {
+            for (const accept_terms of [false, 'true', 1]) {
+                const res = await request(app)
+                    .post('/api/auth/register')
+                    .send({ username: 'sin_terms', email: 'sin_terms@jest.com', password: 'password123', accept_terms });
+                expect(res.statusCode).toBe(400);
+                expect(res.body.code).toBe('VALIDATION_ERROR');
+            }
+        });
+
+        test('registro con accept_terms: true guarda versión vigente y fecha', async () => {
+            const res = await request(app)
+                .post('/api/auth/register')
+                .send({ username: 'con_terms', email: 'con_terms@jest.com', password: 'password123', accept_terms: true });
+            expect(res.statusCode).toBe(201);
+            expect(res.body.user).toMatchObject({
+                terms_version: CURRENT_TERMS_VERSION,
+                current_terms_version: CURRENT_TERMS_VERSION,
+                needs_terms: false,
+            });
+            const row = await termsRow(res.body.user.id);
+            expect(row.terms_version).toBe('2026-11');
+            expect(row.terms_accepted_at).toBeInstanceOf(Date);
+        });
+
+        test('login de una cuenta sin aceptar → needs_terms: true', async () => {
+            const res = await request(app)
+                .post('/api/auth/login')
+                .send({ username: 'legacy_jest', password: 'password123' });
+            expect(res.statusCode).toBe(200);
+            expect(res.body.user).toMatchObject({
+                terms_version: null,
+                current_terms_version: CURRENT_TERMS_VERSION,
+                needs_terms: true,
+            });
+        });
+
+        test('perfil propio expone el estado de los términos; el ajeno no', async () => {
+            const own = await request(app).get('/api/users/legacy_jest').set(auth(legacyToken));
+            expect(own.body).toMatchObject({
+                needs_terms: true,
+                terms_version: null,
+                current_terms_version: CURRENT_TERMS_VERSION,
+            });
+
+            const other = await request(app).get('/api/users/legacy_jest').set(auth(otherToken));
+            expect(other.statusCode).toBe(200);
+            expect(other.body).not.toHaveProperty('needs_terms');
+            expect(other.body).not.toHaveProperty('terms_version');
+            expect(other.body).not.toHaveProperty('current_terms_version');
+        });
+
+        test('sin aceptar: crear una lectura PÚBLICA → 403 TERMS_REQUIRED y no se guarda', async () => {
+            const res = await createLog(legacyToken, BOOK_T2, { status: 'leyendo', is_log_public: true });
+            expect(res.statusCode).toBe(403);
+            expect(res.body.code).toBe('TERMS_REQUIRED');
+            const [rows] = await db.query(
+                'SELECT 1 FROM reading_logs rl JOIN books b ON b.id = rl.book_id WHERE rl.user_id = ? AND b.external_id = ?',
+                [legacyId, BOOK_T2.external_id]
+            );
+            expect(rows).toHaveLength(0);
+        });
+
+        test('sin aceptar: crear una lectura PRIVADA → 201 (no se bloquea)', async () => {
+            const res = await createLog(legacyToken, BOOK_T2, { status: 'leyendo', is_log_public: false });
+            expect(res.statusCode).toBe(201);
+            legacyPrivateLogId = res.body.logId;
+            // Sin is_log_public también es privada por defecto.
+            const def = await createLog(legacyToken, BOOK_T3, { status: 'leyendo' });
+            expect(def.statusCode).toBe(201);
+        });
+
+        test('sin aceptar: editar privada → pública → 403 TERMS_REQUIRED y sigue privada', async () => {
+            const res = await request(app)
+                .put(`/api/readings/${legacyPrivateLogId}`)
+                .set(auth(legacyToken))
+                .send({ is_log_public: true });
+            expect(res.statusCode).toBe(403);
+            expect(res.body.code).toBe('TERMS_REQUIRED');
+            expect(await isPublicInDb(legacyPrivateLogId)).toBe(0);
+        });
+
+        test('sin aceptar: editar una privada sin publicarla → 200', async () => {
+            const res = await request(app)
+                .put(`/api/readings/${legacyPrivateLogId}`)
+                .set(auth(legacyToken))
+                .send({ current_page: 10, review_text: 'Nota privada', is_log_public: false });
+            expect(res.statusCode).toBe(200);
+        });
+
+        test('las públicas existentes no se tocan; editarlas exige aceptar, hacerlas privadas no', async () => {
+            expect(await isPublicInDb(legacyPublicLogId)).toBe(1);
+            const feed = await request(app).get(`/api/books/feed?external_id=${BOOK_T1.external_id}`);
+            expect(feed.body.map((r) => r.review_text)).toContain('Antigua');
+
+            const edit = await request(app)
+                .put(`/api/readings/${legacyPublicLogId}`)
+                .set(auth(legacyToken))
+                .send({ review_text: 'Texto nuevo público' });
+            expect(edit.statusCode).toBe(403);
+            expect(edit.body.code).toBe('TERMS_REQUIRED');
+
+            const hide = await request(app)
+                .put(`/api/readings/${legacyPublicLogId}`)
+                .set(auth(legacyToken))
+                .send({ is_log_public: false });
+            expect(hide.statusCode).toBe(200);
+            expect(await isPublicInDb(legacyPublicLogId)).toBe(0);
+        });
+
+        test('TERMS_REQUIRED no se adelanta a la autorización: lectura ajena → 403 FORBIDDEN', async () => {
+            const res = await request(app)
+                .put(`/api/readings/${publicLogId}`)
+                .set(auth(legacyToken))
+                .send({ is_log_public: true });
+            expect(res.statusCode).toBe(403);
+            expect(res.body.code).toBe('FORBIDDEN');
+        });
+
+        test('POST /account/terms sin token → 401', async () => {
+            const res = await request(app).post('/api/account/terms');
+            expect(res.statusCode).toBe(401);
+            expect(res.body.code).toBe('UNAUTHORIZED');
+        });
+
+        test('POST /account/terms acepta la versión vigente y registra la fecha', async () => {
+            const res = await request(app).post('/api/account/terms').set(auth(legacyToken)).send({});
+            expect(res.statusCode).toBe(200);
+            expect(res.body).toMatchObject({
+                terms_version: CURRENT_TERMS_VERSION,
+                current_terms_version: CURRENT_TERMS_VERSION,
+                needs_terms: false,
+            });
+            expect(res.body.terms_accepted_at).toBeTruthy();
+            const row = await termsRow(legacyId);
+            expect(row.terms_version).toBe(CURRENT_TERMS_VERSION);
+            expect(row.terms_accepted_at).toBeInstanceOf(Date);
+        });
+
+        test('POST /account/terms es idempotente: conserva la fecha de la primera aceptación', async () => {
+            await db.query("UPDATE users SET terms_accepted_at = '2026-11-01 10:00:00' WHERE id = ?", [legacyId]);
+            const before = (await termsRow(legacyId)).terms_accepted_at.getTime();
+            const res = await request(app).post('/api/account/terms').set(auth(legacyToken));
+            expect(res.statusCode).toBe(200);
+            expect((await termsRow(legacyId)).terms_accepted_at.getTime()).toBe(before);
+        });
+
+        test('POST /account/terms ignora una versión enviada por el cliente', async () => {
+            const res = await request(app)
+                .post('/api/account/terms')
+                .set(auth(legacyToken))
+                .send({ version: '1999-01' });
+            expect(res.statusCode).toBe(200);
+            expect((await termsRow(legacyId)).terms_version).toBe(CURRENT_TERMS_VERSION);
+        });
+
+        test('tras aceptar: publicar una privada y crear una pública → OK', async () => {
+            const edit = await request(app)
+                .put(`/api/readings/${legacyPrivateLogId}`)
+                .set(auth(legacyToken))
+                .send({ is_log_public: true });
+            expect(edit.statusCode).toBe(200);
+            expect(await isPublicInDb(legacyPrivateLogId)).toBe(1);
+
+            const create = await createLog(legacyToken, BOOK_T4, { status: 'leyendo', is_log_public: true });
+            expect(create.statusCode).toBe(201);
+
+            const profile = await request(app).get('/api/users/legacy_jest').set(auth(legacyToken));
+            expect(profile.body.needs_terms).toBe(false);
+        });
+
+        test('versión aceptada desactualizada → needs_terms y vuelve a exigir aceptar', async () => {
+            await db.query("UPDATE users SET terms_version = '2025-01' WHERE id = ?", [legacyId]);
+            const login = await request(app)
+                .post('/api/auth/login')
+                .send({ username: 'legacy_jest', password: 'password123' });
+            expect(login.body.user).toMatchObject({ terms_version: '2025-01', needs_terms: true });
+
+            const res = await request(app)
+                .put(`/api/readings/${legacyPrivateLogId}`)
+                .set(auth(legacyToken))
+                .send({ review_text: 'Cambio' });
+            expect(res.statusCode).toBe(403);
+            expect(res.body.code).toBe('TERMS_REQUIRED');
+
+            const accept = await request(app).post('/api/account/terms').set(auth(legacyToken));
+            expect(accept.body.terms_version).toBe(CURRENT_TERMS_VERSION);
         });
     });
 });

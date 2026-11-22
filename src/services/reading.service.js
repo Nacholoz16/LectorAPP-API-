@@ -1,6 +1,7 @@
 const db = require('../config/db');
 const ReadingModel = require('../models/reading.model');
 const BookModel = require('../models/book.model');
+const AccountService = require('./account.service');
 const {
     ConflictError,
     ForbiddenError,
@@ -67,6 +68,9 @@ class ReadingService {
     }
 
     async registerReading(userId, { bookData, logData }) {
+        // Publicar exige haber aceptado los términos vigentes; guardar en privado, no.
+        if (logData.is_log_public) await AccountService.assertTermsAccepted(userId);
+
         return withTransaction(async (conn) => {
             const bookId = await BookModel.findOrCreate(bookData, conn);
 
@@ -114,6 +118,13 @@ class ReadingService {
     /** `changes` es un update parcial validado: solo trae los campos enviados. */
     async updateReading(userId, logId, changes) {
         const current = await this._getOwnedLog(userId, logId);
+
+        // Si tras el cambio la lectura queda pública (se publica ahora, o ya lo era y se edita),
+        // se exigen los términos vigentes. Hacerla privada o editar una privada no lo necesita.
+        // Las lecturas públicas existentes no se tocan: solo se pide aceptar al editarlas.
+        const willBePublic =
+            changes.is_log_public !== undefined ? changes.is_log_public : Boolean(current.is_log_public);
+        if (willBePublic) await AccountService.assertTermsAccepted(userId);
 
         // Las fechas pueden venir solo una de las dos: validar el orden con los valores finales.
         const startDate = changes.start_date !== undefined ? changes.start_date : current.start_date;

@@ -13,13 +13,37 @@ class UserModel {
         return rows[0];
     }
 
-    static async create({ username, email, passwordHash }) {
+    /** `termsVersion`: versión de los términos que aceptó al registrarse (se guarda con la fecha). */
+    static async create({ username, email, passwordHash, termsVersion }) {
         const [result] = await db.execute(
-            `INSERT INTO users (username, email, password_hash, is_profile_public)
-             VALUES (?, ?, ?, 1)`, // Perfil público por defecto
-            [username, email, passwordHash]
+            `INSERT INTO users (username, email, password_hash, is_profile_public, terms_version, terms_accepted_at)
+             VALUES (?, ?, ?, 1, ?, NOW())`, // Perfil público por defecto
+            [username, email, passwordHash, termsVersion]
         );
         return result.insertId;
+    }
+
+    /** Versión de los términos aceptada (null si nunca aceptó). `undefined` si no existe. */
+    static async getTermsVersion(id) {
+        const [rows] = await db.execute('SELECT terms_version FROM users WHERE id = ?', [id]);
+        return rows[0] ? rows[0].terms_version : undefined;
+    }
+
+    /**
+     * Registra la aceptación de `version`. Si ya tenía aceptada esa misma versión no cambia nada:
+     * se conserva la fecha de la PRIMERA aceptación (es la que sirve como constancia).
+     */
+    static async acceptTerms(id, version) {
+        await db.execute(
+            `UPDATE users SET terms_version = ?, terms_accepted_at = NOW()
+             WHERE id = ? AND (terms_version IS NULL OR terms_version <> ?)`,
+            [version, id, version]
+        );
+        const [rows] = await db.execute(
+            'SELECT terms_version, terms_accepted_at FROM users WHERE id = ?',
+            [id]
+        );
+        return rows[0];
     }
 
     // Usado por el middleware de auth: sin password_hash.

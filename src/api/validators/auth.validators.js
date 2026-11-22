@@ -24,6 +24,10 @@ const registerSchema = z.object({
         ),
     email: emailSchema,
     password: passwordSchema,
+    // Casilla obligatoria (tarea 1.3): solo vale `true`; si falta o es false → 400.
+    accept_terms: z.literal(true, {
+        error: 'Debes aceptar los Términos y la Política de privacidad para crear tu cuenta',
+    }),
 });
 
 const loginSchema = z
