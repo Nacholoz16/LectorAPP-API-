@@ -51,7 +51,10 @@ const recordSession = async (req, res) => {
 
 const getBookStats = async (req, res) => {
     const { id } = req.validated.params;
-    const stats = await ReadingService.getBookStats(req.user.id, id);
+    // Esta ruta admite cuentas desactivadas (solo para SUS libros): ver ReadingService.getBookStats.
+    const stats = await ReadingService.getBookStats(req.user.id, id, {
+        ownOnly: req.user.status !== 'active',
+    });
     res.json(stats);
 };
 

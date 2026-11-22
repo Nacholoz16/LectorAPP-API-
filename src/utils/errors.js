@@ -41,6 +41,27 @@ class TermsRequiredError extends AppError {
     }
 }
 
+/**
+ * 403 con código propio: la cuenta está desactivada por su dueño (tarea 2.1, D7). Solo puede
+ * ver su biblioteca, reactivarla, cerrar sesión o eliminarla; el cliente pasa a modo solo lectura.
+ */
+class AccountDeactivatedError extends AppError {
+    constructor(message = 'Tu cuenta está desactivada. Reactívala para volver a usar LectorApp.') {
+        super(message, 403, 'ACCOUNT_DEACTIVATED');
+    }
+}
+
+/**
+ * 401 con código propio para "la contraseña que confirmaste no es correcta" en acciones de una
+ * sesión ya iniciada (desactivar, y en el futuro eliminar la cuenta). El código distinto permite
+ * al cliente NO tratarlo como sesión vencida (no renovar ni mandar a Login).
+ */
+class InvalidPasswordError extends AppError {
+    constructor(message = 'La contraseña no es correcta.') {
+        super(message, 401, 'INVALID_PASSWORD');
+    }
+}
+
 class NotFoundError extends AppError {
     constructor(message = 'Recurso no encontrado') {
         super(message, 404, 'NOT_FOUND');
@@ -62,6 +83,8 @@ module.exports = {
     UnauthorizedError,
     ForbiddenError,
     TermsRequiredError,
+    AccountDeactivatedError,
+    InvalidPasswordError,
     NotFoundError,
     ConflictError,
     isDuplicateEntry,

@@ -102,7 +102,7 @@ class AuthService {
 
         const { session } = await issueSession(userId);
         return {
-            user: { id: userId, username, email, ...termsStatus(CURRENT_TERMS_VERSION) },
+            user: { id: userId, username, email, status: 'active', ...termsStatus(CURRENT_TERMS_VERSION) },
             ...session,
         };
     }
@@ -129,6 +129,9 @@ class AuthService {
                 username: user.username,
                 email: user.email,
                 avatar: user.avatar_url,
+                // Una cuenta desactivada (D7) SÍ puede iniciar sesión: la app entra en modo solo
+                // lectura con este campo (y la API lo hace cumplir con requireActive).
+                status: user.status,
                 ...termsStatus(user.terms_version),
             },
             ...session,
@@ -288,6 +291,9 @@ class AuthService {
                 username: user.username,
                 email: user.email,
                 avatar: user.avatar_url,
+                // Una cuenta desactivada (D7) SÍ puede iniciar sesión: la app entra en modo solo
+                // lectura con este campo (y la API lo hace cumplir con requireActive).
+                status: user.status,
                 ...termsStatus(user.terms_version),
             },
             ...session,

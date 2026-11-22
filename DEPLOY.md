@@ -132,3 +132,28 @@ Consultar quién aceptó qué:
 ```sql
 SELECT terms_version, COUNT(*) FROM users GROUP BY terms_version;
 ```
+
+## Desactivar / reactivar la cuenta (`users.status`)
+
+Tarea 2.1 (decisión D7). `npm run migrate` (paso 10) crea `users.status` (todas las cuentas quedan
+`active`), `users.status_changed_at`, `reading_logs.public_before_deactivation` y
+`reading_logs.moderation_locked_at` (esta última la usará la moderación, 3.1).
+
+- `POST /api/account/deactivate` (con contraseña) guarda la visibilidad de cada lectura y las deja
+  privadas; `POST /api/account/reactivate` las devuelve como estaban (salvo las bloqueadas por
+  moderación). `GET /api/account/status` da los conteos para los textos de la app.
+- Una cuenta desactivada puede iniciar sesión, renovar y cerrar sesión, ver su biblioteca y las
+  estadísticas de sus libros; todo lo demás responde `403 ACCOUNT_DEACTIVATED`. Para los demás, su
+  perfil responde 404 y sus "me gusta" dejan de contar (no se borran).
+- **Compatibilidad:** una app anterior a la 1.1.0 no conoce ese código; si la cuenta está desactivada
+  verá errores genéricos ("Tu cuenta está desactivada…"). Solo se puede desactivar desde la app nueva,
+  así que basta con desplegar la API junto con su publicación.
+- Contraseña incorrecta al desactivar → `401 INVALID_PASSWORD` (5 fallos por cuenta cada 15 min).
+
+Consultar o revertir a mano (por ejemplo, si alguien escribe pidiendo ayuda):
+
+```sql
+SELECT status, COUNT(*) FROM users GROUP BY status;
+-- Reactivar a mano: mejor pedirle que use "Reactivar mi cuenta" en la app (restaura la
+-- visibilidad de sus lecturas); un UPDATE de status solo NO la restaura.
+```

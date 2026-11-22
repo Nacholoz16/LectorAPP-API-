@@ -1124,4 +1124,316 @@ describe('API E2E', () => {
             expect(accept.body.terms_version).toBe(CURRENT_TERMS_VERSION);
         });
     });
+
+    // ------------------------------------------------------------------
+    describe('Desactivar y reactivar la cuenta (2.1)', () => {
+        const BOOK_D1 = { external_id: '/works/OLD1W', title: 'Libro Desactivar 1', page_count: 80 };
+        const BOOK_D2 = { external_id: '/works/OLD2W', title: 'Libro Desactivar 2', page_count: 80 };
+        const BOOK_D3 = { external_id: '/works/OLD3W', title: 'Libro Desactivar 3', page_count: 80 };
+        const BOOK_D4 = { external_id: '/works/OLD4W', title: 'Libro Desactivar 4', page_count: 80 };
+        const BOOK_V1 = { external_id: '/works/OLV1W', title: 'Libro del Visitante', page_count: 80 };
+        const PASSWORD = 'password123';
+
+        let dToken; // cuenta que se desactiva
+        let dRefresh;
+        let dId;
+        let vToken; // otra cuenta (visitante)
+        let pubA; // pública
+        let privB; // privada
+        let pubC; // pública (luego la bloquea la moderación mientras está desactivada)
+        let vLog; // lectura pública del visitante, con "me gusta" de la cuenta desactivada
+
+        const createLog = (token, bookData, logData) =>
+            request(app).post('/api/readings').set(auth(token)).send({ bookData, logData });
+        const visibility = async () => {
+            const [rows] = await db.query(
+                'SELECT id, is_log_public, public_before_deactivation FROM reading_logs WHERE user_id = ? ORDER BY id',
+                [dId]
+            );
+            return Object.fromEntries(
+                rows.map((r) => [r.id, [r.is_log_public, r.public_before_deactivation]])
+            );
+        };
+        const userRow = async () => {
+            const [rows] = await db.query('SELECT status, status_changed_at FROM users WHERE id = ?', [dId]);
+            return rows[0];
+        };
+        const deactivate = (password = PASSWORD, token = dToken) =>
+            request(app).post('/api/account/deactivate').set(auth(token)).send({ password });
+        const reactivate = (token = dToken) =>
+            request(app).post('/api/account/reactivate').set(auth(token)).send({});
+        const likesOf = async (token, logId) => {
+            const res = await request(app).get('/api/readings/my-library?limit=50').set(auth(token));
+            return res.body.find((r) => r.id === logId).likes_count;
+        };
+        const expectDeactivated = (res) => {
+            expect(res.statusCode).toBe(403);
+            expect(res.body.code).toBe('ACCOUNT_DEACTIVATED');
+        };
+
+        beforeAll(async () => {
+            const d = await request(app)
+                .post('/api/auth/register')
+                .send({ username: 'deact_jest', email: 'deact@jest.com', password: PASSWORD, accept_terms: true });
+            dToken = d.body.token;
+            dRefresh = d.body.refresh_token;
+            dId = d.body.user.id;
+            const v = await request(app)
+                .post('/api/auth/register')
+                .send({ username: 'visit_jest', email: 'visit@jest.com', password: PASSWORD, accept_terms: true });
+            vToken = v.body.token;
+
+            pubA = (await createLog(dToken, BOOK_D1, { status: 'terminado', review_text: 'Reseña A', is_log_public: true })).body.logId;
+            privB = (await createLog(dToken, BOOK_D2, { status: 'leyendo', review_text: 'Nota B', is_log_public: false })).body.logId;
+            pubC = (await createLog(dToken, BOOK_D3, { status: 'terminado', review_text: 'Reseña C', is_log_public: true })).body.logId;
+            vLog = (await createLog(vToken, BOOK_V1, { status: 'terminado', review_text: 'Reseña V', is_log_public: true })).body.logId;
+
+            await request(app).post(`/api/readings/${vLog}/like`).set(auth(dToken));
+            await request(app).post(`/api/readings/${pubA}/like`).set(auth(vToken));
+            await request(app).post(`/api/readings/${pubA}/session`).set(auth(dToken))
+                .send({ duration_minutes: 20, pages_read: 10 });
+        });
+
+        test('registro, login y perfil propio informan status: active (el perfil ajeno no)', async () => {
+            const login = await request(app).post('/api/auth/login').send({ username: 'deact_jest', password: PASSWORD });
+            expect(login.body.user.status).toBe('active');
+            const own = await request(app).get('/api/users/deact_jest').set(auth(dToken));
+            expect(own.body.status).toBe('active');
+            const other = await request(app).get('/api/users/deact_jest').set(auth(vToken));
+            expect(other.body).not.toHaveProperty('status');
+        });
+
+        test('GET /account/status (activa) cuenta las lecturas públicas', async () => {
+            const res = await request(app).get('/api/account/status').set(auth(dToken));
+            expect(res.statusCode).toBe(200);
+            expect(res.body).toMatchObject({ status: 'active', public_readings: 2, restorable_readings: 0 });
+        });
+
+        test('sin token → 401 en status, deactivate y reactivate', async () => {
+            for (const [method, path] of [
+                ['get', '/api/account/status'],
+                ['post', '/api/account/deactivate'],
+                ['post', '/api/account/reactivate'],
+            ]) {
+                const res = await request(app)[method](path).send({ password: PASSWORD });
+                expect(res.statusCode).toBe(401);
+                expect(res.body.code).toBe('UNAUTHORIZED');
+            }
+        });
+
+        test('desactivar sin contraseña → 400', async () => {
+            const res = await request(app).post('/api/account/deactivate').set(auth(dToken)).send({});
+            expect(res.statusCode).toBe(400);
+            expect(res.body.code).toBe('VALIDATION_ERROR');
+        });
+
+        test('contraseña incorrecta → 401 INVALID_PASSWORD y nada cambia', async () => {
+            const before = await visibility();
+            const res = await deactivate('incorrecta');
+            expect(res.statusCode).toBe(401);
+            expect(res.body.code).toBe('INVALID_PASSWORD');
+            expect(await visibility()).toEqual(before);
+            expect((await userRow()).status).toBe('active');
+            // La sesión sigue sirviendo (no se revocó nada).
+            const feed = await request(app).get('/api/readings/feed').set(auth(dToken));
+            expect(feed.statusCode).toBe(200);
+        });
+
+        test('desactivar: guarda la visibilidad de cada lectura y las deja todas privadas', async () => {
+            const res = await deactivate();
+            expect(res.statusCode).toBe(200);
+            expect(res.body).toEqual({ status: 'deactivated', hidden_readings: 2 });
+
+            expect(await visibility()).toEqual({
+                [pubA]: [0, 1],
+                [privB]: [0, 0],
+                [pubC]: [0, 1],
+            });
+            const row = await userRow();
+            expect(row.status).toBe('deactivated');
+            expect(row.status_changed_at).toBeInstanceOf(Date);
+        });
+
+        test('desactivar dos veces → 409 y NO pierde la visibilidad guardada', async () => {
+            const res = await deactivate();
+            expect(res.statusCode).toBe(409);
+            expect(res.body.code).toBe('CONFLICT');
+            expect(await visibility()).toEqual({
+                [pubA]: [0, 1],
+                [privB]: [0, 0],
+                [pubC]: [0, 1],
+            });
+        });
+
+        test('GET /account/status (desactivada) cuenta las que volverán a ser públicas', async () => {
+            const res = await request(app).get('/api/account/status').set(auth(dToken));
+            expect(res.statusCode).toBe(200);
+            expect(res.body).toMatchObject({ status: 'deactivated', public_readings: 0, restorable_readings: 2 });
+        });
+
+        test('cada acción prohibida → 403 ACCOUNT_DEACTIVATED y no cambia nada', async () => {
+            const calls = [
+                request(app).post('/api/readings').set(auth(dToken))
+                    .send({ bookData: BOOK_D4, logData: { status: 'leyendo' } }),
+                request(app).put(`/api/readings/${privB}`).set(auth(dToken)).send({ current_page: 5 }),
+                request(app).put(`/api/readings/${pubA}`).set(auth(dToken)).send({ is_log_public: true }),
+                request(app).delete(`/api/readings/${privB}`).set(auth(dToken)),
+                request(app).post(`/api/readings/${vLog}/like`).set(auth(dToken)),
+                request(app).post(`/api/readings/${pubA}/session`).set(auth(dToken))
+                    .send({ duration_minutes: 5, pages_read: 1 }),
+                request(app).get('/api/books/search?q=test').set(auth(dToken)),
+                request(app).get('/api/readings/feed').set(auth(dToken)),
+                request(app).get('/api/readings/feed/new-count?after_id=1').set(auth(dToken)),
+                request(app).get('/api/users/visit_jest').set(auth(dToken)),
+                request(app).get('/api/users/visit_jest/library').set(auth(dToken)),
+                request(app).get('/api/users/visit_jest/stats').set(auth(dToken)),
+                request(app).get('/api/users/deact_jest').set(auth(dToken)),
+                request(app).post('/api/users/goal').set(auth(dToken)).send({ target_books: 5 }),
+                request(app).put('/api/users/privacy').set(auth(dToken)).send({ is_profile_public: false }),
+                request(app).post('/api/account/terms').set(auth(dToken)),
+                // Estadísticas de una lectura AJENA (aunque sea pública): fuera de su biblioteca.
+                request(app).get(`/api/readings/${vLog}/stats`).set(auth(dToken)),
+                // Administración: tampoco (y no revela si el endpoint existe).
+                request(app).get('/api/admin/cualquier-cosa').set(auth(dToken)),
+            ];
+            for (const res of await Promise.all(calls)) expectDeactivated(res);
+
+            expect(await visibility()).toEqual({
+                [pubA]: [0, 1],
+                [privB]: [0, 0],
+                [pubC]: [0, 1],
+            });
+            const [sessions] = await db.query('SELECT COUNT(*) AS n FROM reading_sessions WHERE user_id = ?', [dId]);
+            expect(sessions[0].n).toBe(1);
+            const [likes] = await db.query('SELECT COUNT(*) AS n FROM reading_likes WHERE user_id = ?', [dId]);
+            expect(likes[0].n).toBe(1); // su "me gusta" no se borró
+        });
+
+        test('lo permitido sigue funcionando: biblioteca, stats de sus libros, login y refresh', async () => {
+            const lib = await request(app).get('/api/readings/my-library?limit=50').set(auth(dToken));
+            expect(lib.statusCode).toBe(200);
+            expect(lib.body.map((r) => r.id).sort()).toEqual([pubA, privB, pubC].sort());
+
+            const stats = await request(app).get(`/api/readings/${pubA}/stats`).set(auth(dToken));
+            expect(stats.statusCode).toBe(200);
+            expect(stats.body.total_minutes).toBe(20);
+
+            const missing = await request(app).get('/api/readings/999999/stats').set(auth(dToken));
+            expect(missing.statusCode).toBe(404);
+
+            const login = await request(app).post('/api/auth/login').send({ username: 'deact_jest', password: PASSWORD });
+            expect(login.statusCode).toBe(200);
+            expect(login.body.user.status).toBe('deactivated');
+
+            const refreshed = await request(app).post('/api/auth/refresh').send({ refresh_token: dRefresh });
+            expect(refreshed.statusCode).toBe(200);
+            dToken = refreshed.body.token;
+            dRefresh = refreshed.body.refresh_token;
+        });
+
+        test('cerrar sesión funciona con la cuenta desactivada', async () => {
+            const login = await request(app).post('/api/auth/login').send({ username: 'deact_jest', password: PASSWORD });
+            const res = await request(app)
+                .post('/api/auth/logout')
+                .set(auth(login.body.token))
+                .send({ refresh_token: login.body.refresh_token });
+            expect(res.statusCode).toBe(200);
+            const after = await request(app).get('/api/readings/my-library').set(auth(login.body.token));
+            expect(after.statusCode).toBe(401);
+        });
+
+        test('los demás no ven nada: perfil, biblioteca y stats → 404 como un usuario inexistente', async () => {
+            const ghost = await request(app).get('/api/users/no_existe_jest').set(auth(vToken));
+            for (const path of ['/api/users/deact_jest', '/api/users/deact_jest/library', '/api/users/deact_jest/stats']) {
+                const res = await request(app).get(path).set(auth(vToken));
+                expect(res.statusCode).toBe(404);
+                expect(res.body).toEqual(ghost.body);
+            }
+        });
+
+        test('los demás no ven nada: feed global, reseñas por libro y "me gusta" dados', async () => {
+            const feed = await request(app).get('/api/readings/feed?limit=50').set(auth(vToken));
+            expect(feed.body.some((r) => r.username === 'deact_jest')).toBe(false);
+
+            const bookFeed = await request(app).get(`/api/books/feed?external_id=${encodeURIComponent(BOOK_D1.external_id)}`);
+            expect(bookFeed.statusCode).toBe(200);
+            expect(bookFeed.body).toHaveLength(0);
+
+            // Su "me gusta" en la lectura del visitante deja de contar mientras está desactivada.
+            expect(await likesOf(vToken, vLog)).toBe(0);
+            const vFeedItem = feed.body.find((r) => r.id === vLog);
+            expect(vFeedItem.likes_count).toBe(0);
+
+            // ...ni en las estadísticas públicas del visitante.
+            const vStats = await request(app).get('/api/users/visit_jest/stats').set(auth(vToken));
+            expect(vStats.body.total_likes).toBe(0);
+        });
+
+        test('reactivar: restaura cada lectura exactamente; la bloqueada por moderación sigue privada', async () => {
+            // Mientras estaba desactivada, la moderación bloqueó C (D4). Además, los términos
+            // vigentes cambiaron: reactivar NO los exige (restaura, no publica nada nuevo).
+            await db.query('UPDATE reading_logs SET moderation_locked_at = NOW() WHERE id = ?', [pubC]);
+            await db.query('UPDATE users SET terms_version = NULL WHERE id = ?', [dId]);
+
+            const status = await request(app).get('/api/account/status').set(auth(dToken));
+            expect(status.body.restorable_readings).toBe(1);
+
+            const res = await reactivate();
+            expect(res.statusCode).toBe(200);
+            expect(res.body).toEqual({ status: 'active', restored_readings: 1 });
+
+            expect(await visibility()).toEqual({
+                [pubA]: [1, null],
+                [privB]: [0, null],
+                [pubC]: [0, null],
+            });
+            expect((await userRow()).status).toBe('active');
+            await db.query("UPDATE users SET terms_version = '2026-11' WHERE id = ?", [dId]);
+        });
+
+        test('reactivar una cuenta activa → 409', async () => {
+            const res = await reactivate();
+            expect(res.statusCode).toBe(409);
+            expect(res.body.code).toBe('CONFLICT');
+        });
+
+        test('tras reactivar: vuelve a ser visible y sus "me gusta" vuelven a contar', async () => {
+            const profile = await request(app).get('/api/users/deact_jest').set(auth(vToken));
+            expect(profile.statusCode).toBe(200);
+            expect(profile.body.library.map((r) => r.id)).toEqual([pubA]);
+
+            expect(await likesOf(vToken, vLog)).toBe(1);
+            expect(await likesOf(dToken, pubA)).toBe(1);
+
+            const feed = await request(app).get('/api/readings/feed').set(auth(dToken));
+            expect(feed.statusCode).toBe(200);
+            const bookFeed = await request(app).get(`/api/books/feed?external_id=${encodeURIComponent(BOOK_D1.external_id)}`);
+            expect(bookFeed.body.map((r) => r.review_text)).toEqual(['Reseña A']);
+        });
+
+        test('dos desactivaciones simultáneas: una gana, la otra 409, la visibilidad queda intacta', async () => {
+            const [r1, r2] = await Promise.all([deactivate(), deactivate()]);
+            expect([r1.statusCode, r2.statusCode].sort()).toEqual([200, 409]);
+            expect(await visibility()).toEqual({
+                [pubA]: [0, 1],
+                [privB]: [0, 0],
+                [pubC]: [0, 0],
+            });
+            const back = await reactivate();
+            expect(back.body.restored_readings).toBe(1);
+        });
+
+        test('una cuenta suspendida no puede reactivarse ni desactivarse por su cuenta', async () => {
+            await db.query("UPDATE users SET status = 'suspended' WHERE id = ?", [dId]);
+            try {
+                const re = await reactivate();
+                expect(re.statusCode).toBe(403);
+                expect(re.body.code).toBe('FORBIDDEN');
+                const de = await deactivate();
+                expect(de.statusCode).toBe(403);
+            } finally {
+                await db.query("UPDATE users SET status = 'active' WHERE id = ?", [dId]);
+            }
+        });
+    });
 });

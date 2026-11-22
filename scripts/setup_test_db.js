@@ -28,6 +28,9 @@ async function setupTestDb() {
   // Aceptación de términos (mismo esquema que scripts/migrate.js, paso 9).
   try { await db.query('ALTER TABLE users ADD COLUMN terms_version VARCHAR(20) NULL'); } catch (_) {}
   try { await db.query('ALTER TABLE users ADD COLUMN terms_accepted_at DATETIME NULL'); } catch (_) {}
+  // Estado de la cuenta (mismo esquema que scripts/migrate.js, paso 10).
+  try { await db.query("ALTER TABLE users ADD COLUMN status ENUM('active','deactivated','suspended') NOT NULL DEFAULT 'active'"); } catch (_) {}
+  try { await db.query('ALTER TABLE users ADD COLUMN status_changed_at DATETIME NULL'); } catch (_) {}
 
   // Auditoría de administración (mismo esquema que scripts/migrate.js, paso 8).
   await db.query(`
@@ -122,6 +125,9 @@ async function setupTestDb() {
   try { await db.query('ALTER TABLE reading_logs ADD COLUMN current_page INT DEFAULT 0'); } catch (_) {}
   try { await db.query('ALTER TABLE reading_logs ADD UNIQUE KEY uniq_user_book (user_id, book_id)'); } catch (_) {}
   try { await db.query('CREATE INDEX idx_logs_public_id ON reading_logs (is_log_public, id)'); } catch (_) {}
+  // Visibilidad a restaurar y bloqueo por moderación (scripts/migrate.js, paso 10).
+  try { await db.query('ALTER TABLE reading_logs ADD COLUMN public_before_deactivation TINYINT(1) NULL'); } catch (_) {}
+  try { await db.query('ALTER TABLE reading_logs ADD COLUMN moderation_locked_at DATETIME NULL'); } catch (_) {}
 
   await db.query(`
     CREATE TABLE IF NOT EXISTS reading_likes (

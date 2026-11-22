@@ -64,11 +64,19 @@ class ReadingModel {
                 u.username, u.avatar_url, u.is_profile_public
             FROM reading_logs r
             JOIN users u ON r.user_id = u.id
-            WHERE r.book_id = ? AND r.is_log_public = 1
+            WHERE r.book_id = ? AND r.is_log_public = 1 AND u.status = 'active'
             ORDER BY r.created_at DESC
             LIMIT 100
         `, [bookId]);
         return rows;
+    }
+
+    // Solo cuentan los "me gusta" de cuentas activas: los de una cuenta desactivada (D7) dejan de
+    // sumar mientras lo esté y vuelven solos al reactivarla (no se borran). El JOIN es por PK.
+    static _activeLikesCount(logIdExpr) {
+        return `(SELECT COUNT(*) FROM reading_likes lc
+                 JOIN users lu ON lu.id = lc.user_id AND lu.status = 'active'
+                 WHERE lc.reading_log_id = ${logIdExpr})`;
     }
 
     // Likes por subconsulta correlacionada en vez de LEFT JOIN + GROUP BY:
@@ -76,7 +84,7 @@ class ReadingModel {
     // y MySQL ya no necesita una tabla temporal para agrupar.
     static _likesColumns() {
         return `
-            (SELECT COUNT(*) FROM reading_likes lc WHERE lc.reading_log_id = r.id) AS likes_count,
+            ${this._activeLikesCount('r.id')} AS likes_count,
             EXISTS(SELECT 1 FROM reading_likes lh WHERE lh.reading_log_id = r.id AND lh.user_id = ?) AS has_liked`;
     }
 
@@ -135,17 +143,23 @@ class ReadingModel {
             FROM reading_logs r
             JOIN books b ON r.book_id = b.id
             JOIN users u ON r.user_id = u.id
-            WHERE r.is_log_public = 1 ${cursorFilter}
+            WHERE r.is_log_public = 1 AND u.status = 'active' ${cursorFilter}
             ORDER BY r.id DESC
             LIMIT ?
         `, params);
         return rows;
     }
 
-    /** Cuántas publicaciones públicas hay más nuevas que `afterId` (banner "X nuevas publicaciones"). */
+    /**
+     * Cuántas publicaciones públicas hay más nuevas que `afterId` (banner "X nuevas publicaciones").
+     * Mismo filtro de autor activo que el feed, para que el número coincida con lo que se verá.
+     * (Defensa en profundidad: una cuenta desactivada ya no tiene lecturas públicas.)
+     */
     static async countPublicNewerThan(afterId) {
         const [rows] = await db.execute(
-            'SELECT COUNT(*) AS count FROM reading_logs WHERE is_log_public = 1 AND id > ?',
+            `SELECT COUNT(*) AS count FROM reading_logs r
+             JOIN users u ON u.id = r.user_id AND u.status = 'active'
+             WHERE r.is_log_public = 1 AND r.id > ?`,
             [afterId]
         );
         return Number(rows[0].count);
@@ -176,7 +190,7 @@ class ReadingModel {
         }
 
         const [count] = await db.execute(
-            'SELECT COUNT(*) AS likes_count FROM reading_likes WHERE reading_log_id = ?',
+            `SELECT ${this._activeLikesCount('?')} AS likes_count`,
             [readingLogId]
         );
         return { liked, likes_count: Number(count[0].likes_count) };
@@ -266,6 +280,7 @@ class ReadingModel {
             `SELECT COUNT(*) AS total_likes
              FROM reading_likes rlk
              JOIN reading_logs rl ON rlk.reading_log_id = rl.id
+             JOIN users lu ON lu.id = rlk.user_id AND lu.status = 'active'
              WHERE rl.user_id = ? ${publicOnly}`,
             [userId]
         );
@@ -300,6 +315,64 @@ class ReadingModel {
             [userId, currentYear, targetBooks, targetBooks]
         );
         return { success: true, target_books: targetBooks, year: currentYear };
+    }
+
+    // --- Desactivar / reactivar la cuenta (tarea 2.1, D7) ---
+
+    /**
+     * Conteos para los textos de confirmación:
+     * - public_readings: lecturas públicas ahora (las que se ocultarán al desactivar).
+     * - restorable_readings: las que volverán a ser públicas al reactivar (eran públicas antes de
+     *   desactivar y no las bloqueó la moderación, D4).
+     * Con `conn` (en una transacción) bloquea las filas: el conteo coincide con lo que cambia
+     * el UPDATE siguiente aunque llegue otra edición a la vez.
+     */
+    static async countVisibility(userId, conn = db) {
+        const lock = conn === db ? '' : ' FOR UPDATE';
+        const [rows] = await conn.execute(
+            `SELECT
+                COALESCE(SUM(is_log_public = 1), 0) AS public_readings,
+                COALESCE(SUM(public_before_deactivation = 1 AND moderation_locked_at IS NULL), 0)
+                    AS restorable_readings
+             FROM reading_logs WHERE user_id = ?${lock}`,
+            [userId]
+        );
+        return {
+            public_readings: Number(rows[0].public_readings),
+            restorable_readings: Number(rows[0].restorable_readings),
+        };
+    }
+
+    /**
+     * Guarda la visibilidad de CADA lectura del usuario y las deja todas privadas.
+     * MySQL evalúa las asignaciones de un UPDATE de izquierda a derecha: la primera lee el
+     * `is_log_public` original, antes de ponerlo en 0. Solo dentro de una transacción.
+     */
+    static async hideAllForDeactivation(userId, conn) {
+        await conn.execute(
+            `UPDATE reading_logs
+             SET public_before_deactivation = IF(is_log_public = 1, 1, 0),
+                 is_log_public = 0
+             WHERE user_id = ?`,
+            [userId]
+        );
+    }
+
+    /**
+     * Devuelve a públicas las que lo eran antes de desactivar, salvo las bloqueadas por
+     * moderación (D4), y limpia la marca de todas. Solo dentro de una transacción.
+     */
+    static async restoreAfterDeactivation(userId, conn) {
+        await conn.execute(
+            `UPDATE reading_logs SET is_log_public = 1
+             WHERE user_id = ? AND public_before_deactivation = 1 AND moderation_locked_at IS NULL`,
+            [userId]
+        );
+        await conn.execute(
+            `UPDATE reading_logs SET public_before_deactivation = NULL
+             WHERE user_id = ? AND public_before_deactivation IS NOT NULL`,
+            [userId]
+        );
     }
 
     // 9. ESTADÍSTICAS DE UN LIBRO ESPECÍFICO (los permisos se comprueban en el servicio)

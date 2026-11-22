@@ -46,13 +46,43 @@ class UserModel {
         return rows[0];
     }
 
-    // Usado por el middleware de auth: sin password_hash.
+    // Usado por el middleware de auth: sin password_hash. `status` decide si la cuenta puede
+    // hacer algo más que ver su biblioteca (requireActive).
     static async findById(id) {
         const [rows] = await db.execute(
-            'SELECT id, username, email, avatar_url, is_profile_public, are_stats_public, password_changed_at FROM users WHERE id = ?',
+            'SELECT id, username, email, avatar_url, is_profile_public, are_stats_public, status, password_changed_at FROM users WHERE id = ?',
             [id]
         );
         return rows[0];
+    }
+
+    /** Contraseña y estado, para confirmar acciones sobre la cuenta. Nunca devolver al cliente. */
+    static async findCredentialsById(id) {
+        const [rows] = await db.execute(
+            'SELECT id, password_hash, status FROM users WHERE id = ?',
+            [id]
+        );
+        return rows[0];
+    }
+
+    /**
+     * Estado de la cuenta. Con `conn` (dentro de una transacción) bloquea la fila: dos
+     * desactivar/reactivar simultáneos se ejecutan uno detrás del otro.
+     */
+    static async getStatus(id, conn = db) {
+        const lock = conn === db ? '' : ' FOR UPDATE';
+        const [rows] = await conn.execute(
+            `SELECT status, status_changed_at FROM users WHERE id = ?${lock}`,
+            [id]
+        );
+        return rows[0];
+    }
+
+    static async setStatus(id, status, conn = db) {
+        await conn.execute(
+            'UPDATE users SET status = ?, status_changed_at = NOW() WHERE id = ?',
+            [status, id]
+        );
     }
 
     // COALESCE: los campos no enviados (null) conservan su valor actual.

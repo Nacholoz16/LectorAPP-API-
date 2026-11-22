@@ -3,6 +3,7 @@ const ReadingModel = require('../models/reading.model');
 const BookModel = require('../models/book.model');
 const AccountService = require('./account.service');
 const {
+    AccountDeactivatedError,
     ConflictError,
     ForbiddenError,
     NotFoundError,
@@ -166,8 +167,19 @@ class ReadingService {
         return { success: true };
     }
 
-    async getBookStats(userId, logId) {
-        await this._getReadableLog(userId, logId);
+    /**
+     * `ownOnly`: la cuenta está desactivada (D7) y solo puede ver las estadísticas de SUS libros;
+     * pedir las de una lectura ajena (aunque sea pública) responde 403 ACCOUNT_DEACTIVATED,
+     * igual que cualquier otra acción fuera de su biblioteca.
+     */
+    async getBookStats(userId, logId, { ownOnly = false } = {}) {
+        if (ownOnly) {
+            const log = await ReadingModel.findAccessInfo(logId);
+            if (!log) throw new NotFoundError('Lectura no encontrada');
+            if (log.user_id !== userId) throw new AccountDeactivatedError();
+        } else {
+            await this._getReadableLog(userId, logId);
+        }
         return ReadingModel.getStatsByReadingLogId(logId);
     }
 }
