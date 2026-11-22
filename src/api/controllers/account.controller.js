@@ -16,4 +16,9 @@ const reactivate = async (req, res) => {
     res.json(await AccountService.reactivate(req.user.id));
 };
 
-module.exports = { acceptTerms, getStatus, deactivate, reactivate };
+// 200 con cuerpo (no 204): el cliente confirma con `deleted: true` que el borrado ocurrió.
+const deleteAccount = async (req, res) => {
+    res.json(await AccountService.deleteAccount(req.user.id, req.body.password, req.token));
+};
+
+module.exports = { acceptTerms, getStatus, deactivate, reactivate, deleteAccount };

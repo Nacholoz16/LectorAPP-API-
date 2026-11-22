@@ -53,7 +53,7 @@ class AccountDeactivatedError extends AppError {
 
 /**
  * 401 con código propio para "la contraseña que confirmaste no es correcta" en acciones de una
- * sesión ya iniciada (desactivar, y en el futuro eliminar la cuenta). El código distinto permite
+ * sesión ya iniciada (desactivar, eliminar la cuenta). El código distinto permite
  * al cliente NO tratarlo como sesión vencida (no renovar ni mandar a Login).
  */
 class InvalidPasswordError extends AppError {

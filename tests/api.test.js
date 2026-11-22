@@ -1436,4 +1436,242 @@ describe('API E2E', () => {
             }
         });
     });
+
+    // ------------------------------------------------------------------
+    describe('Eliminar la cuenta (2.2)', () => {
+        const BOOK_X1 = { external_id: '/works/OLX1W', title: 'Libro a Borrar 1', page_count: 90 };
+        const BOOK_X2 = { external_id: '/works/OLX2W', title: 'Libro a Borrar 2', page_count: 90 };
+        const BOOK_W1 = { external_id: '/works/OLW1W', title: 'Libro del Testigo', page_count: 90 };
+        const PASSWORD = 'password123';
+
+        let xToken; // cuenta que se elimina
+        let xRefresh;
+        let xId;
+        let xLogs = []; // ids de sus lecturas (para buscar "me gusta"/sesiones recibidos)
+        let wToken; // testigo: otra cuenta que sigue existiendo
+        let wLog; // lectura pública del testigo, con un "me gusta" de la cuenta eliminada
+        const auditIds = [];
+
+        const register = (username) =>
+            request(app).post('/api/auth/register')
+                .send({ username, email: `${username}@jest.com`, password: PASSWORD, accept_terms: true });
+        const createLog = (token, bookData, logData) =>
+            request(app).post('/api/readings').set(auth(token)).send({ bookData, logData });
+        const deleteAccount = (token, password = PASSWORD) =>
+            request(app).delete('/api/account').set(auth(token)).send({ password });
+        const likesOf = async (token, logId) => {
+            const res = await request(app).get('/api/readings/my-library?limit=50').set(auth(token));
+            return res.body.find((r) => r.id === logId).likes_count;
+        };
+
+        /**
+         * Busca al usuario en TODA la BD de tests, sin una lista de tablas escrita a mano:
+         * - toda columna con FK a users.id o con nombre de referencia a usuario (user_id, *_user_id,
+         *   admin_id, reporter_id, blocker_id, blocked_id, resolved_by);
+         * - toda columna con FK a reading_logs.id o llamada reading_log_id, contra sus lecturas;
+         * - toda tabla con target_type + target_id ('user' = la cuenta, 'reading' = sus lecturas);
+         * - users por id, username y email.
+         * Devuelve { 'tabla.columna': filas } solo con lo que encontró (vacío = sin rastro).
+         */
+        const traces = async (userId, username, logIds) => {
+            const ids = logIds.length > 0 ? logIds : [0];
+            const [userCols] = await db.query(`
+                SELECT table_name AS t, column_name AS c FROM information_schema.columns
+                WHERE table_schema = DATABASE()
+                  AND (column_name REGEXP '(^|_)user_id$'
+                       OR column_name IN ('admin_id', 'reporter_id', 'blocker_id', 'blocked_id', 'resolved_by'))
+                UNION
+                SELECT table_name, column_name FROM information_schema.key_column_usage
+                WHERE table_schema = DATABASE() AND referenced_table_name = 'users'`);
+            const [logCols] = await db.query(`
+                SELECT table_name AS t, column_name AS c FROM information_schema.columns
+                WHERE table_schema = DATABASE() AND column_name = 'reading_log_id'
+                UNION
+                SELECT table_name, column_name FROM information_schema.key_column_usage
+                WHERE table_schema = DATABASE() AND referenced_table_name = 'reading_logs'`);
+            const [targetTables] = await db.query(`
+                SELECT table_name AS t FROM information_schema.columns
+                WHERE table_schema = DATABASE() AND column_name IN ('target_type', 'target_id')
+                GROUP BY table_name HAVING COUNT(*) = 2`);
+
+            // Cordura: si el esquema cambiara de nombres, el test no debe pasar "en vacío".
+            const found = userCols.map((r) => `${r.t}.${r.c}`);
+            for (const expected of ['reading_logs.user_id', 'reading_likes.user_id', 'reading_sessions.user_id',
+                'reading_goals.user_id', 'refresh_tokens.user_id', 'password_resets.user_id', 'admin_actions.admin_id']) {
+                expect(found).toContain(expected);
+            }
+            expect(targetTables.map((r) => r.t)).toContain('admin_actions');
+
+            const out = {};
+            const count = async (key, sql, params) => {
+                const [rows] = await db.query(sql, params);
+                if (rows[0].n > 0) out[key] = rows[0].n;
+            };
+            for (const { t, c } of userCols) {
+                if (t === 'users') continue;
+                await count(`${t}.${c}`, `SELECT COUNT(*) AS n FROM \`${t}\` WHERE \`${c}\` = ?`, [userId]);
+            }
+            for (const { t, c } of logCols) {
+                await count(`${t}.${c}`, `SELECT COUNT(*) AS n FROM \`${t}\` WHERE \`${c}\` IN (?)`, [ids]);
+            }
+            for (const { t } of targetTables) {
+                await count(`${t}.target_id`,
+                    `SELECT COUNT(*) AS n FROM \`${t}\`
+                     WHERE (target_type = 'user' AND target_id = ?) OR (target_type = 'reading' AND target_id IN (?))`,
+                    [userId, ids]);
+            }
+            await count('users', 'SELECT COUNT(*) AS n FROM users WHERE id = ? OR username = ? OR email = ?',
+                [userId, username, `${username}@jest.com`]);
+            return out;
+        };
+
+        beforeAll(async () => {
+            const x = await register('borrar_jest');
+            xToken = x.body.token;
+            xRefresh = x.body.refresh_token;
+            xId = x.body.user.id;
+            wToken = (await register('testigo_jest')).body.token;
+
+            // Lecturas: una pública con reseña y una privada; el testigo registra el MISMO libro
+            // (el catálogo es compartido y no debe borrarse).
+            const pub = (await createLog(xToken, BOOK_X1, { status: 'terminado', rating: 4, review_text: 'Reseña X', is_log_public: true })).body.logId;
+            const priv = (await createLog(xToken, BOOK_X2, { status: 'leyendo', is_log_public: false })).body.logId;
+            xLogs = [pub, priv];
+            wLog = (await createLog(wToken, BOOK_W1, { status: 'terminado', review_text: 'Reseña W', is_log_public: true })).body.logId;
+            await createLog(wToken, BOOK_X1, { status: 'leyendo', is_log_public: false });
+
+            await request(app).post(`/api/readings/${priv}/session`).set(auth(xToken))
+                .send({ duration_minutes: 15, pages_read: 8 });
+            await request(app).post('/api/users/goal').set(auth(xToken)).send({ target_books: 12 });
+            await request(app).post(`/api/readings/${wLog}/like`).set(auth(xToken)); // "me gusta" dado
+            await request(app).post(`/api/readings/${pub}/like`).set(auth(wToken)); // "me gusta" recibido
+            await request(app).post('/api/auth/forgot-password').send({ email: 'borrar_jest@jest.com' });
+
+            // Auditoría: la cuenta como admin que actuó y como objetivo (cuenta y lectura).
+            for (const [adminId, type, target] of [[xId, 'user', null], [null, 'user', xId], [null, 'reading', pub]]) {
+                const [r] = await db.query(
+                    'INSERT INTO admin_actions (admin_id, action, target_type, target_id, note) VALUES (?, ?, ?, ?, ?)',
+                    [adminId, 'test.audit', type, target, 'nota de prueba']
+                );
+                auditIds.push(r.insertId);
+            }
+        });
+
+        test('antes de borrar, la búsqueda genérica SÍ encuentra sus datos en cada tabla', async () => {
+            const found = await traces(xId, 'borrar_jest', xLogs);
+            expect(Object.keys(found)).toEqual(expect.arrayContaining([
+                'reading_logs.user_id', 'reading_likes.user_id', 'reading_likes.reading_log_id',
+                'reading_sessions.user_id', 'reading_goals.user_id', 'refresh_tokens.user_id',
+                'password_resets.user_id', 'admin_actions.admin_id', 'admin_actions.target_id', 'users',
+            ]));
+            expect(await likesOf(wToken, wLog)).toBe(1);
+        });
+
+        test('sin token → 401', async () => {
+            const res = await request(app).delete('/api/account').send({ password: PASSWORD });
+            expect(res.statusCode).toBe(401);
+            expect(res.body.code).toBe('UNAUTHORIZED');
+        });
+
+        test('sin contraseña → 400', async () => {
+            const res = await request(app).delete('/api/account').set(auth(xToken)).send({});
+            expect(res.statusCode).toBe(400);
+            expect(res.body.code).toBe('VALIDATION_ERROR');
+        });
+
+        test('contraseña incorrecta → 401 INVALID_PASSWORD, nada cambia y la sesión sigue', async () => {
+            const before = await traces(xId, 'borrar_jest', xLogs);
+            const res = await deleteAccount(xToken, 'incorrecta');
+            expect(res.statusCode).toBe(401);
+            expect(res.body.code).toBe('INVALID_PASSWORD');
+            expect(await traces(xId, 'borrar_jest', xLogs)).toEqual(before);
+            const lib = await request(app).get('/api/readings/my-library').set(auth(xToken));
+            expect(lib.statusCode).toBe(200);
+        });
+
+        test('borrar: 200 { deleted: true } y NINGÚN rastro del usuario en ninguna tabla', async () => {
+            const res = await deleteAccount(xToken);
+            expect(res.statusCode).toBe(200);
+            expect(res.body).toEqual({ deleted: true });
+            expect(await traces(xId, 'borrar_jest', xLogs)).toEqual({});
+        });
+
+        test('los libros del catálogo siguen existiendo', async () => {
+            const [rows] = await db.query('SELECT external_id FROM books WHERE external_id IN (?, ?)',
+                [BOOK_X1.external_id, BOOK_X2.external_id]);
+            expect(rows).toHaveLength(2);
+            // Y la lectura del testigo sobre el mismo libro sigue ahí.
+            const lib = await request(app).get('/api/readings/my-library?limit=50').set(auth(wToken));
+            expect(lib.body.map((r) => r.external_id)).toContain(BOOK_X1.external_id);
+        });
+
+        test('su "me gusta" en una lectura ajena desaparece y el contador baja', async () => {
+            expect(await likesOf(wToken, wLog)).toBe(0);
+            const [rows] = await db.query('SELECT COUNT(*) AS n FROM reading_likes WHERE reading_log_id = ?', [wLog]);
+            expect(rows[0].n).toBe(0);
+        });
+
+        test('la auditoría se conserva, pero sin vínculo con la cuenta eliminada', async () => {
+            const [rows] = await db.query('SELECT admin_id, target_id FROM admin_actions WHERE id IN (?)', [auditIds]);
+            expect(rows).toHaveLength(3);
+            for (const r of rows) expect(r).toEqual({ admin_id: null, target_id: null });
+        });
+
+        test('tras borrar: el token viejo → 401 y el refresh → 401', async () => {
+            const lib = await request(app).get('/api/readings/my-library').set(auth(xToken));
+            expect(lib.statusCode).toBe(401);
+            const status = await request(app).get('/api/account/status').set(auth(xToken));
+            expect(status.statusCode).toBe(401);
+            const again = await deleteAccount(xToken);
+            expect(again.statusCode).toBe(401);
+            const refreshed = await request(app).post('/api/auth/refresh').send({ refresh_token: xRefresh });
+            expect(refreshed.statusCode).toBe(401);
+        });
+
+        test('login con sus credenciales → el mismo 401 que una cuenta inexistente', async () => {
+            const ghost = await request(app).post('/api/auth/login')
+                .send({ username: 'nunca_existio_jest', password: PASSWORD });
+            for (const body of [{ username: 'borrar_jest', password: PASSWORD }, { email: 'borrar_jest@jest.com', password: PASSWORD }]) {
+                const res = await request(app).post('/api/auth/login').send(body);
+                expect(res.statusCode).toBe(401);
+                expect(res.body).toEqual(ghost.body);
+            }
+        });
+
+        test('el username y el email quedan libres para registrarse de nuevo', async () => {
+            const res = await register('borrar_jest');
+            expect(res.statusCode).toBe(201);
+            expect(res.body.user.id).not.toBe(xId);
+            // La cuenta nueva empieza vacía: nada de la anterior.
+            const lib = await request(app).get('/api/readings/my-library').set(auth(res.body.token));
+            expect(lib.body).toEqual([]);
+        });
+
+        test('una cuenta desactivada también puede eliminarse', async () => {
+            const d = await register('borrar_desact_jest');
+            const log = (await createLog(d.body.token, BOOK_X2, { status: 'leyendo', is_log_public: true })).body.logId;
+            const deact = await request(app).post('/api/account/deactivate').set(auth(d.body.token)).send({ password: PASSWORD });
+            expect(deact.statusCode).toBe(200);
+
+            const res = await deleteAccount(d.body.token);
+            expect(res.statusCode).toBe(200);
+            expect(await traces(d.body.user.id, 'borrar_desact_jest', [log])).toEqual({});
+        });
+
+        test('una cuenta suspendida también puede eliminarse (Google exige que cualquiera pueda)', async () => {
+            const s = await register('borrar_susp_jest');
+            await db.query("UPDATE users SET status = 'suspended' WHERE id = ?", [s.body.user.id]);
+            const res = await deleteAccount(s.body.token);
+            expect(res.statusCode).toBe(200);
+            expect(await traces(s.body.user.id, 'borrar_susp_jest', [])).toEqual({});
+        });
+
+        test('dos borrados simultáneos: uno 200 y el otro 401, nunca 500', async () => {
+            const c = await register('borrar_doble_jest');
+            const log = (await createLog(c.body.token, BOOK_X1, { status: 'leyendo', is_log_public: true })).body.logId;
+            const [r1, r2] = await Promise.all([deleteAccount(c.body.token), deleteAccount(c.body.token)]);
+            expect([r1.statusCode, r2.statusCode].sort()).toEqual([200, 401]);
+            expect(await traces(c.body.user.id, 'borrar_doble_jest', [log])).toEqual({});
+        });
+    });
 });

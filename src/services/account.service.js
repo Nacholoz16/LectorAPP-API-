@@ -1,8 +1,11 @@
 const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
 const db = require('../config/db');
 const UserModel = require('../models/user.model');
 const ReadingModel = require('../models/reading.model');
 const { CURRENT_TERMS_VERSION, termsStatus } = require('../config/terms');
+const { deleteUserCompletely } = require('./accountDeletion.service');
+const { hashToken } = require('../utils/tokens');
 const {
     ConflictError,
     ForbiddenError,
@@ -129,6 +132,46 @@ class AccountService {
             await ReadingModel.restoreAfterDeactivation(userId, conn);
             await UserModel.setStatus(userId, 'active', conn);
             return { status: 'active', restored_readings: restored };
+        });
+    }
+
+    // --- Eliminar la cuenta (tarea 2.2) ---
+
+    /**
+     * Elimina la cuenta y todos sus datos, confirmada con la contraseña. Vale para cualquier
+     * estado (activa, desactivada o suspendida): Google exige que cualquiera pueda borrar su cuenta.
+     *
+     * El borrado en sí vive en `accountDeletion.service` (lo reutiliza la web, 2.3). Aquí se añade
+     * lo propio de una sesión abierta: comprobar la contraseña y revocar el token de acceso con el
+     * que se pidió (los refresh tokens se borran con la cuenta; un acceso de otro dispositivo deja
+     * de valer porque `authenticate` ya no encuentra al usuario).
+     */
+    async deleteAccount(userId, password, accessToken) {
+        const user = await UserModel.findCredentialsById(userId);
+        if (!user) throw new UnauthorizedError(USER_GONE_MESSAGE);
+
+        // bcrypt fuera de la transacción: tarda ~100 ms y no debe retener bloqueos.
+        if (!(await bcrypt.compare(password, user.password_hash))) {
+            throw new InvalidPasswordError();
+        }
+
+        return withTransaction(async (conn) => {
+            // Bloquea la fila: de dos borrados simultáneos, el segundo espera al primero y aquí ya
+            // no encuentra la cuenta → 401 (como cualquier token de una cuenta que ya no existe).
+            const current = await UserModel.getStatus(userId, conn);
+            if (!current) throw new UnauthorizedError(USER_GONE_MESSAGE);
+
+            await deleteUserCompletely(userId, conn);
+
+            // Blacklist del acceso usado: defensa extra por si un id llegara a reutilizarse.
+            const { exp } = jwt.decode(accessToken) || {};
+            if (exp) {
+                await conn.execute(
+                    'INSERT IGNORE INTO token_blacklist (token, expires_at) VALUES (?, ?)',
+                    [hashToken(accessToken), new Date(exp * 1000)]
+                );
+            }
+            return { deleted: true };
         });
     }
 

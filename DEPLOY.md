@@ -157,3 +157,23 @@ SELECT status, COUNT(*) FROM users GROUP BY status;
 -- Reactivar a mano: mejor pedirle que use "Reactivar mi cuenta" en la app (restaura la
 -- visibilidad de sus lecturas); un UPDATE de status solo NO la restaura.
 ```
+
+## Eliminar la cuenta (`DELETE /api/account`)
+
+Tarea 2.2. **No hay migración**: no cambia el esquema.
+
+- `DELETE /api/account` con `{ password }` borra en una transacción la cuenta y todo lo suyo:
+  lecturas (con reseñas), "me gusta" dados y recibidos, sesiones del cronómetro, metas, refresh
+  tokens y códigos de recuperación. Los libros (catálogo compartido) **no** se borran. En
+  `admin_actions` las filas se conservan, pero `admin_id`/`target_id` que apuntaban a la cuenta o a
+  sus lecturas quedan en `NULL`. Responde `200 { deleted: true }`.
+- Funciona con la cuenta activa, desactivada o suspendida. Contraseña incorrecta → `401
+  INVALID_PASSWORD` (comparte con `/deactivate` el límite de 5 fallos por cuenta cada 15 min).
+- La lógica vive en `src/services/accountDeletion.service.js` (`deleteUserCompletely`), que la
+  web (2.3) reutilizará. **Toda tabla nueva con datos de un usuario se añade ahí** (bloqueos,
+  denuncias, suspensiones…); el test E2E "ningún rastro" recorre el esquema y falla si se olvida.
+- **No es reversible.** Los respaldos de `mysqldump` (sección "Respaldo") sí contienen los datos
+  borrados hasta que se eliminen: no restaurar un respaldo antiguo sin tenerlo en cuenta.
+- No se borra la cuenta "a mano" con `DELETE FROM users`: en la BD de producción no todas las
+  tablas tienen `ON DELETE CASCADE` garantizado. Si alguien lo pide por correo, indicarle la ruta
+  en la app (Perfil → Ajustes → Cuenta → Eliminar mi cuenta) o, cuando exista (2.3), la web.

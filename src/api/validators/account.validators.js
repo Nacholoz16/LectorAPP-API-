@@ -1,7 +1,7 @@
 const { z } = require('zod');
 
 /**
- * Confirmar una acción sobre la cuenta con la contraseña actual (desactivar; en la 2.2, eliminar).
+ * Confirmar una acción sobre la cuenta con la contraseña actual (desactivar, eliminar).
  * Solo se exige que venga: el formato lo decidió el registro y bcrypt ignora lo que pase de 72 bytes.
  */
 const passwordConfirmSchema = z.object({

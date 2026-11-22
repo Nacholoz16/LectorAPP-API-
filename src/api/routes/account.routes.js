@@ -26,7 +26,6 @@ const passwordConfirmLimiter = rateLimit({
 
 // --- Rutas que una cuenta DESACTIVADA también puede usar (D7) ---
 // Van con `authenticate` (no exige cuenta activa) y ANTES del `router.use(protect)`.
-// La 2.2 sumará aquí DELETE /account (eliminar la cuenta también debe poder hacerse desactivada).
 
 // GET /api/account/status — estado de la cuenta y conteos para los textos de confirmación.
 router.get('/status', authenticate, AccountController.getStatus);
@@ -40,6 +39,16 @@ router.post(
 );
 // POST /api/account/reactivate — sin contraseña (la sesión ya está autenticada). Activa → 409.
 router.post('/reactivate', authenticate, AccountController.reactivate);
+// DELETE /api/account — elimina la cuenta y sus datos para siempre (tarea 2.2), con contraseña.
+// Comparte el límite de intentos con /deactivate (misma instancia → mismo contador por cuenta):
+// alternar entre ambas rutas no da más intentos.
+router.delete(
+    '/',
+    authenticate,
+    passwordConfirmLimiter,
+    validate({ body: passwordConfirmSchema }),
+    AccountController.deleteAccount
+);
 
 // --- Resto: solo cuentas activas ---
 router.use(protect);
