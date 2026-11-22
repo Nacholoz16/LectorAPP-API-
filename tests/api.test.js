@@ -455,8 +455,8 @@ describe('API E2E', () => {
     });
 
     describe('CORS', () => {
-        test('la web nueva (lectorapp.nacholoz3d.cl) está permitida, también en el preflight', async () => {
-            const origin = 'https://lectorapp.nacholoz3d.cl';
+        test('la web nueva (lector.nacholoz3d.cl) está permitida, también en el preflight', async () => {
+            const origin = 'https://lector.nacholoz3d.cl';
             const res = await request(app).get('/api/health').set('Origin', origin);
             expect(res.headers['access-control-allow-origin']).toBe(origin);
 
