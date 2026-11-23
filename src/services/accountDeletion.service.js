@@ -19,7 +19,7 @@
  *   - 3.1 `reports`: borrar las denuncias HECHAS (reporter_id) y decidir qué pasa con las
  *     RECIBIDAS (target_type 'user' = la cuenta, 'reading' = sus lecturas).
  *   - 3.2 `user_blocks`: borrar donde blocker_id = usuario O blocked_id = usuario.
- *   - 4.x `suspensions` / `suspension_appeals` / `user_notices` (user_id) y `deletion_requests`.
+ *   - 4.x `suspensions` / `suspension_appeals` / `user_notices` (user_id).
  * ────────────────────────────────────────────────────────────────────────────────────────────────
  */
 
@@ -44,6 +44,8 @@ const USER_DATA_STEPS = [
     { table: 'refresh_tokens', where: 'user_id = ?' },
     // Códigos de recuperación de contraseña.
     { table: 'password_resets', where: 'user_id = ?' },
+    // Códigos para eliminar la cuenta desde la web (2.3), incluido el que confirma este borrado.
+    { table: 'deletion_requests', where: 'user_id = ?' },
 ];
 
 /**

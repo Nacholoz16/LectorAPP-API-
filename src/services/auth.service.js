@@ -12,6 +12,7 @@ const {
 } = require('../utils/tokens');
 const { ConflictError, UnauthorizedError, ValidationError, isDuplicateEntry } = require('../utils/errors');
 const { sendMail } = require('../utils/mailer');
+const { canIssueCode, canTryCode } = require('./emailCodeGuard');
 const { CURRENT_TERMS_VERSION, termsStatus } = require('../config/terms');
 const logger = require('../utils/logger');
 
@@ -211,6 +212,8 @@ class AuthService {
             [user.id, RESET_RESEND_COOLDOWN_SECONDS]
         );
         if (recent.length > 0) return;
+        // Tope por cuenta en 24 h (códigos emitidos e intentos fallidos): ver emailCodeGuard.
+        if (!(await canIssueCode('password_resets', user.id))) return;
 
         const code = crypto.randomInt(0, 1_000_000).toString().padStart(6, '0');
 
@@ -236,31 +239,46 @@ class AuthService {
      * TODAS las sesiones anteriores (password_changed_at) y devuelve una sesión nueva.
      */
     async resetPassword({ email, code, password }) {
+        // bcrypt SIEMPRE y ANTES de buscar la cuenta (~60-100 ms): así un email inexistente tarda
+        // lo mismo que uno registrado y el tiempo de respuesta no revela qué cuentas existen.
+        // Además va fuera de la transacción: no debe retener los bloqueos de abajo.
+        const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
+
         const user = await UserModel.findByEmail(email);
+        // NO mover este return por encima del bcrypt.hash: volvería la enumeración por tiempos.
         if (!user) throw new ValidationError(INVALID_CODE_MESSAGE);
 
-        const [rows] = await db.execute(
-            `SELECT id, code_hash, attempts FROM password_resets
-             WHERE user_id = ? AND used_at IS NULL AND expires_at > NOW()
-             ORDER BY id DESC LIMIT 1`,
-            [user.id]
-        );
-        const reset = rows[0];
-        if (!reset || reset.attempts >= RESET_MAX_ATTEMPTS) {
-            throw new ValidationError(INVALID_CODE_MESSAGE);
-        }
-
-        const expected = Buffer.from(reset.code_hash, 'hex');
-        const given = Buffer.from(hashResetCode(user.id, code), 'hex');
-        if (expected.length !== given.length || !crypto.timingSafeEqual(expected, given)) {
-            await db.execute('UPDATE password_resets SET attempts = attempts + 1 WHERE id = ?', [reset.id]);
-            throw new ValidationError(INVALID_CODE_MESSAGE);
-        }
-
-        const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
+        // Verificar el código y cambiar la contraseña en UNA transacción, con la fila del usuario
+        // bloqueada: los intentos simultáneos (desde muchas IPs) se ejecutan de a uno, así ni los
+        // 5 intentos por código ni el tope por cuenta de emailCodeGuard se pueden sobrepasar.
         const conn = await db.getConnection();
         try {
             await conn.beginTransaction();
+            await conn.execute('SELECT id FROM users WHERE id = ? FOR UPDATE', [user.id]);
+
+            if (!(await canTryCode('password_resets', user.id, conn))) {
+                throw new ValidationError(INVALID_CODE_MESSAGE);
+            }
+            const [rows] = await conn.execute(
+                `SELECT id, code_hash, attempts FROM password_resets
+                 WHERE user_id = ? AND used_at IS NULL AND expires_at > NOW()
+                 ORDER BY id DESC LIMIT 1 FOR UPDATE`,
+                [user.id]
+            );
+            const reset = rows[0];
+            if (!reset || reset.attempts >= RESET_MAX_ATTEMPTS) {
+                throw new ValidationError(INVALID_CODE_MESSAGE);
+            }
+
+            const expected = Buffer.from(reset.code_hash, 'hex');
+            const given = Buffer.from(hashResetCode(user.id, code), 'hex');
+            if (expected.length !== given.length || !crypto.timingSafeEqual(expected, given)) {
+                // El intento fallido se CONFIRMA antes de responder (si no, el rollback lo anularía).
+                await conn.execute('UPDATE password_resets SET attempts = attempts + 1 WHERE id = ?', [reset.id]);
+                await conn.commit();
+                throw new ValidationError(INVALID_CODE_MESSAGE);
+            }
+
             // Los JWT emitidos antes de este momento dejan de valer (ver auth.middleware).
             // Se guarda en segundos Unix (como el `iat` del JWT): no depende de zonas horarias.
             await conn.execute(
@@ -278,7 +296,8 @@ class AuthService {
             );
             await conn.commit();
         } catch (error) {
-            await conn.rollback();
+            // Si ya se hizo commit (intento fallido), rollback no hace nada.
+            await conn.rollback().catch(() => {});
             throw error;
         } finally {
             conn.release();

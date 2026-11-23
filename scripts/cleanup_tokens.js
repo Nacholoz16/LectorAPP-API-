@@ -15,6 +15,13 @@ async function setupMaintenance() {
   );
   console.log('Refresh tokens viejos eliminados:', refreshResult.affectedRows);
 
+  // Códigos de eliminación de cuenta (web, 2.3) vencidos hace más de un día: ya no sirven y el
+  // enfriamiento de 60 s solo mira los recientes.
+  const [deletionResult] = await db.execute(
+    'DELETE FROM deletion_requests WHERE expires_at < (NOW() - INTERVAL 1 DAY)'
+  );
+  console.log('Códigos de eliminación vencidos eliminados:', deletionResult.affectedRows);
+
   // Crear evento MySQL para limpieza automática (si el scheduler está habilitado)
   try {
     await db.execute('SET GLOBAL event_scheduler = ON');

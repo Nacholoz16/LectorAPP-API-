@@ -40,9 +40,12 @@ const loginSchema = z
 
 const forgotPasswordSchema = z.object({ email: emailSchema });
 
+// Código de 6 dígitos enviado por correo (recuperar contraseña y eliminar la cuenta desde la web).
+const emailCodeSchema = z.string().trim().regex(/^\d{6}$/, 'El código tiene 6 dígitos');
+
 const resetPasswordSchema = z.object({
     email: emailSchema,
-    code: z.string().trim().regex(/^\d{6}$/, 'El código tiene 6 dígitos'),
+    code: emailCodeSchema,
     password: passwordSchema,
 });
 
@@ -53,6 +56,8 @@ const refreshSchema = z.object({ refresh_token: refreshTokenField });
 const logoutSchema = z.object({ refresh_token: refreshTokenField.optional() });
 
 module.exports = {
+    emailSchema,
+    emailCodeSchema,
     registerSchema,
     loginSchema,
     forgotPasswordSchema,

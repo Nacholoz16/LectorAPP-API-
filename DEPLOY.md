@@ -66,7 +66,7 @@ docker exec -i lectorDB sh -c 'mysql -u root -p"$MYSQL_ROOT_PASSWORD" anti_socia
 | `NODE_ENV=production` | Log nivel `info`, sin detalles de errores al cliente |
 | `TRUST_PROXY=1` | IP real del cliente detrás de Nginx (necesario para el rate limiting) |
 | `LOG_LEVEL` | Opcional (`info` por defecto en producción) |
-| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM` | Correo de "Olvidé mi contraseña". Sin ellos la API arranca, pero los códigos no se envían (queda un error en el log). El `docker-compose.yml` debe pasarlas al servicio `api` |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM` | Correo de "Olvidé mi contraseña" y de "Eliminar mi cuenta" desde la web. Sin ellos la API arranca, pero los códigos no se envían (queda un error en el log). El `docker-compose.yml` debe pasarlas al servicio `api` |
 
 Si cambias el `.env`, aplica con `deploy\deploy.bat`, que recrea el contenedor.
 
@@ -176,4 +176,32 @@ Tarea 2.2. **No hay migración**: no cambia el esquema.
   borrados hasta que se eliminen: no restaurar un respaldo antiguo sin tenerlo en cuenta.
 - No se borra la cuenta "a mano" con `DELETE FROM users`: en la BD de producción no todas las
   tablas tienen `ON DELETE CASCADE` garantizado. Si alguien lo pide por correo, indicarle la ruta
-  en la app (Perfil → Ajustes → Cuenta → Eliminar mi cuenta) o, cuando exista (2.3), la web.
+  en la app (Perfil → Ajustes → Cuenta → Eliminar mi cuenta) o la web
+  (`https://lector.nacholoz3d.cl/eliminar-cuenta`).
+
+## Eliminar la cuenta desde la web (`/api/account/deletion-*`)
+
+Tarea 2.3 (Google Play exige un enlace web para pedir el borrado). **Migración paso 11**: `npm run
+migrate` crea la tabla `deletion_requests` (`user_id`, `code_hash` HMAC, `expires_at`, `attempts`,
+`used_at`, `created_at`; FK con `ON DELETE CASCADE`). No hay variables nuevas: usa `JWT_SECRET`
+(HMAC del código) y el SMTP de "Olvidé mi contraseña".
+
+- `POST /api/account/deletion-request { email }` (sin sesión) → **siempre** `200 { message }`
+  idéntico, exista o no la cuenta y esté activa, desactivada o suspendida. Si existe, envía un
+  código de 6 dígitos (vence en 15 min, 1 envío por minuto por cuenta; pedir otro invalida el
+  anterior). El correo se envía en segundo plano: la respuesta no espera al SMTP.
+- `POST /api/account/deletion-confirm { email, code }` (sin sesión) → `200 { deleted: true }` con
+  el mismo borrado que `DELETE /api/account` (`deleteUserCompletely`), o `400 VALIDATION_ERROR`
+  genérico ("El código no es válido o ya venció…") para cualquier fallo: cuenta inexistente, sin
+  código, vencido, incorrecto o tras 5 intentos fallidos. Funciona también con cuentas suspendidas.
+- Rate limit por IP: solicitar 5/hora, confirmar 10/15 min (como forgot/reset).
+- **Tope por cuenta en 24 h** (`src/services/emailCodeGuard.js`, también para forgot/reset de
+  contraseña, cada flujo con su propia tabla): máximo 5 códigos emitidos y 10 intentos fallidos en
+  total. Al llegar, no se envían más códigos y ninguno se acepta (ni el correcto) hasta que pasen
+  24 h; las respuestas públicas no cambian (mismo 200 / mismo 400). Si una persona legítima queda
+  bloqueada, basta esperar; para desbloquearla antes:
+  `UPDATE deletion_requests SET created_at = created_at - INTERVAL 1 DAY WHERE user_id = <id>;`
+  (o `password_resets`).
+- Los códigos de recuperación y los de eliminación no son intercambiables (tablas y HMAC distintos).
+- `npm run cleanup` borra además los códigos de eliminación vencidos hace más de un día.
+- El email se normaliza igual que en el registro (sin espacios y en minúsculas).

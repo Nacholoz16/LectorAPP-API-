@@ -3,7 +3,11 @@ const rateLimit = require('express-rate-limit');
 const AccountController = require('../controllers/account.controller');
 const { authenticate, protect } = require('../middlewares/auth.middleware');
 const { validate } = require('../middlewares/validate');
-const { passwordConfirmSchema } = require('../validators/account.validators');
+const {
+    passwordConfirmSchema,
+    deletionRequestSchema,
+    deletionConfirmSchema,
+} = require('../validators/account.validators');
 
 const router = express.Router();
 const isTest = process.env.NODE_ENV === 'test';
@@ -23,6 +27,47 @@ const passwordConfirmLimiter = rateLimit({
         code: 'RATE_LIMITED',
     },
 });
+
+// --- Eliminar la cuenta desde la web, SIN sesión (tarea 2.3) ---
+// Mismos límites por IP que forgot/reset (además del enfriamiento de 60 s por cuenta y de los 5
+// intentos por código que aplica el servicio).
+const deletionRequestLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000,
+    limit: 5,
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+    skip: () => isTest,
+    message: {
+        error: 'Demasiadas solicitudes. Intenta de nuevo en una hora.',
+        code: 'RATE_LIMITED',
+    },
+});
+const deletionConfirmLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: 10,
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+    skip: () => isTest,
+    message: {
+        error: 'Demasiados intentos. Espera 15 minutos e inténtalo de nuevo.',
+        code: 'RATE_LIMITED',
+    },
+});
+
+// POST /api/account/deletion-request { email } → siempre 200 { message } idéntico.
+router.post(
+    '/deletion-request',
+    deletionRequestLimiter,
+    validate({ body: deletionRequestSchema }),
+    AccountController.requestDeletion
+);
+// POST /api/account/deletion-confirm { email, code } → 200 { deleted: true } | 400 genérico.
+router.post(
+    '/deletion-confirm',
+    deletionConfirmLimiter,
+    validate({ body: deletionConfirmSchema }),
+    AccountController.confirmDeletion
+);
 
 // --- Rutas que una cuenta DESACTIVADA también puede usar (D7) ---
 // Van con `authenticate` (no exige cuenta activa) y ANTES del `router.use(protect)`.

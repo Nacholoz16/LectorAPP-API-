@@ -62,6 +62,21 @@ async function setupTestDb() {
     )
   `);
 
+  // Eliminar la cuenta desde la web (mismo esquema que scripts/migrate.js, paso 11).
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS deletion_requests (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id INT NOT NULL,
+      code_hash CHAR(64) NOT NULL,
+      expires_at DATETIME NOT NULL,
+      attempts TINYINT UNSIGNED NOT NULL DEFAULT 0,
+      used_at DATETIME NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_deletion_user (user_id, used_at),
+      CONSTRAINT fk_deletion_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `);
+
   await db.query(`
     CREATE TABLE IF NOT EXISTS refresh_tokens (
       id INT AUTO_INCREMENT PRIMARY KEY,

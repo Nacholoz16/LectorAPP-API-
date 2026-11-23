@@ -36,6 +36,7 @@ beforeAll(async () => {
         'admin_actions',
         'refresh_tokens',
         'password_resets',
+        'deletion_requests',
         'token_blacklist',
         'reading_likes',
         'reading_sessions',
@@ -51,6 +52,68 @@ beforeAll(async () => {
 afterAll(async () => {
     await db.end();
 });
+
+/**
+ * Busca al usuario en TODA la BD de tests, sin una lista de tablas escrita a mano:
+ * - toda columna con FK a users.id o con nombre de referencia a usuario (user_id, *_user_id,
+ *   admin_id, reporter_id, blocker_id, blocked_id, resolved_by);
+ * - toda columna con FK a reading_logs.id o llamada reading_log_id, contra sus lecturas;
+ * - toda tabla con target_type + target_id ('user' = la cuenta, 'reading' = sus lecturas);
+ * - users por id, username y email.
+ * Devuelve { 'tabla.columna': filas } solo con lo que encontró (vacío = sin rastro).
+ */
+const traces = async (userId, username, logIds) => {
+    const ids = logIds.length > 0 ? logIds : [0];
+    const [userCols] = await db.query(`
+        SELECT table_name AS t, column_name AS c FROM information_schema.columns
+        WHERE table_schema = DATABASE()
+          AND (column_name REGEXP '(^|_)user_id$'
+               OR column_name IN ('admin_id', 'reporter_id', 'blocker_id', 'blocked_id', 'resolved_by'))
+        UNION
+        SELECT table_name, column_name FROM information_schema.key_column_usage
+        WHERE table_schema = DATABASE() AND referenced_table_name = 'users'`);
+    const [logCols] = await db.query(`
+        SELECT table_name AS t, column_name AS c FROM information_schema.columns
+        WHERE table_schema = DATABASE() AND column_name = 'reading_log_id'
+        UNION
+        SELECT table_name, column_name FROM information_schema.key_column_usage
+        WHERE table_schema = DATABASE() AND referenced_table_name = 'reading_logs'`);
+    const [targetTables] = await db.query(`
+        SELECT table_name AS t FROM information_schema.columns
+        WHERE table_schema = DATABASE() AND column_name IN ('target_type', 'target_id')
+        GROUP BY table_name HAVING COUNT(*) = 2`);
+
+    // Cordura: si el esquema cambiara de nombres, el test no debe pasar "en vacío".
+    const found = userCols.map((r) => `${r.t}.${r.c}`);
+    for (const expected of ['reading_logs.user_id', 'reading_likes.user_id', 'reading_sessions.user_id',
+        'reading_goals.user_id', 'refresh_tokens.user_id', 'password_resets.user_id',
+        'deletion_requests.user_id', 'admin_actions.admin_id']) {
+        expect(found).toContain(expected);
+    }
+    expect(targetTables.map((r) => r.t)).toContain('admin_actions');
+
+    const out = {};
+    const count = async (key, sql, params) => {
+        const [rows] = await db.query(sql, params);
+        if (rows[0].n > 0) out[key] = rows[0].n;
+    };
+    for (const { t, c } of userCols) {
+        if (t === 'users') continue;
+        await count(`${t}.${c}`, `SELECT COUNT(*) AS n FROM \`${t}\` WHERE \`${c}\` = ?`, [userId]);
+    }
+    for (const { t, c } of logCols) {
+        await count(`${t}.${c}`, `SELECT COUNT(*) AS n FROM \`${t}\` WHERE \`${c}\` IN (?)`, [ids]);
+    }
+    for (const { t } of targetTables) {
+        await count(`${t}.target_id`,
+            `SELECT COUNT(*) AS n FROM \`${t}\`
+             WHERE (target_type = 'user' AND target_id = ?) OR (target_type = 'reading' AND target_id IN (?))`,
+            [userId, ids]);
+    }
+    await count('users', 'SELECT COUNT(*) AS n FROM users WHERE id = ? OR username = ? OR email = ?',
+        [userId, username, `${username}@jest.com`]);
+    return out;
+};
 
 describe('API E2E', () => {
     let ownerToken;
@@ -1464,67 +1527,6 @@ describe('API E2E', () => {
             return res.body.find((r) => r.id === logId).likes_count;
         };
 
-        /**
-         * Busca al usuario en TODA la BD de tests, sin una lista de tablas escrita a mano:
-         * - toda columna con FK a users.id o con nombre de referencia a usuario (user_id, *_user_id,
-         *   admin_id, reporter_id, blocker_id, blocked_id, resolved_by);
-         * - toda columna con FK a reading_logs.id o llamada reading_log_id, contra sus lecturas;
-         * - toda tabla con target_type + target_id ('user' = la cuenta, 'reading' = sus lecturas);
-         * - users por id, username y email.
-         * Devuelve { 'tabla.columna': filas } solo con lo que encontró (vacío = sin rastro).
-         */
-        const traces = async (userId, username, logIds) => {
-            const ids = logIds.length > 0 ? logIds : [0];
-            const [userCols] = await db.query(`
-                SELECT table_name AS t, column_name AS c FROM information_schema.columns
-                WHERE table_schema = DATABASE()
-                  AND (column_name REGEXP '(^|_)user_id$'
-                       OR column_name IN ('admin_id', 'reporter_id', 'blocker_id', 'blocked_id', 'resolved_by'))
-                UNION
-                SELECT table_name, column_name FROM information_schema.key_column_usage
-                WHERE table_schema = DATABASE() AND referenced_table_name = 'users'`);
-            const [logCols] = await db.query(`
-                SELECT table_name AS t, column_name AS c FROM information_schema.columns
-                WHERE table_schema = DATABASE() AND column_name = 'reading_log_id'
-                UNION
-                SELECT table_name, column_name FROM information_schema.key_column_usage
-                WHERE table_schema = DATABASE() AND referenced_table_name = 'reading_logs'`);
-            const [targetTables] = await db.query(`
-                SELECT table_name AS t FROM information_schema.columns
-                WHERE table_schema = DATABASE() AND column_name IN ('target_type', 'target_id')
-                GROUP BY table_name HAVING COUNT(*) = 2`);
-
-            // Cordura: si el esquema cambiara de nombres, el test no debe pasar "en vacío".
-            const found = userCols.map((r) => `${r.t}.${r.c}`);
-            for (const expected of ['reading_logs.user_id', 'reading_likes.user_id', 'reading_sessions.user_id',
-                'reading_goals.user_id', 'refresh_tokens.user_id', 'password_resets.user_id', 'admin_actions.admin_id']) {
-                expect(found).toContain(expected);
-            }
-            expect(targetTables.map((r) => r.t)).toContain('admin_actions');
-
-            const out = {};
-            const count = async (key, sql, params) => {
-                const [rows] = await db.query(sql, params);
-                if (rows[0].n > 0) out[key] = rows[0].n;
-            };
-            for (const { t, c } of userCols) {
-                if (t === 'users') continue;
-                await count(`${t}.${c}`, `SELECT COUNT(*) AS n FROM \`${t}\` WHERE \`${c}\` = ?`, [userId]);
-            }
-            for (const { t, c } of logCols) {
-                await count(`${t}.${c}`, `SELECT COUNT(*) AS n FROM \`${t}\` WHERE \`${c}\` IN (?)`, [ids]);
-            }
-            for (const { t } of targetTables) {
-                await count(`${t}.target_id`,
-                    `SELECT COUNT(*) AS n FROM \`${t}\`
-                     WHERE (target_type = 'user' AND target_id = ?) OR (target_type = 'reading' AND target_id IN (?))`,
-                    [userId, ids]);
-            }
-            await count('users', 'SELECT COUNT(*) AS n FROM users WHERE id = ? OR username = ? OR email = ?',
-                [userId, username, `${username}@jest.com`]);
-            return out;
-        };
-
         beforeAll(async () => {
             const x = await register('borrar_jest');
             xToken = x.body.token;
@@ -1672,6 +1674,367 @@ describe('API E2E', () => {
             const [r1, r2] = await Promise.all([deleteAccount(c.body.token), deleteAccount(c.body.token)]);
             expect([r1.statusCode, r2.statusCode].sort()).toEqual([200, 401]);
             expect(await traces(c.body.user.id, 'borrar_doble_jest', [log])).toEqual({});
+        });
+    });
+
+    describe('Eliminar la cuenta desde la web (2.3)', () => {
+        const PASSWORD = 'password123';
+        const SAME_MESSAGE = 'Si el email está registrado, te enviamos un código para confirmar. Revisa también la carpeta de spam.';
+        const INVALID = { error: 'El código no es válido o ya venció. Pide uno nuevo.', code: 'VALIDATION_ERROR' };
+        const DELETION_SUBJECT = 'Código para eliminar tu cuenta de LectorApp';
+
+        const register = (username) =>
+            request(app).post('/api/auth/register')
+                .send({ username, email: `${username}@jest.com`, password: PASSWORD, accept_terms: true });
+        const askCode = (email) => request(app).post('/api/account/deletion-request').send({ email });
+        const confirm = (email, code) => request(app).post('/api/account/deletion-confirm').send({ email, code });
+        const deletionMails = (email) => outbox.filter((m) => m.to === email && m.subject === DELETION_SUBJECT);
+        const lastCode = (email, subject = DELETION_SUBJECT) => {
+            const mail = [...outbox].reverse().find((m) => m.to === email && m.subject.startsWith(subject));
+            return mail && mail.text.match(/\b(\d{6})\b/)[1];
+        };
+        const skipCooldown = () =>
+            db.query('UPDATE deletion_requests SET created_at = created_at - INTERVAL 2 MINUTE');
+        const wrongCode = (code) => (code === '000000' ? '000001' : '000000');
+        // Saca de la ventana de 24 h del tope por cuenta los códigos ya emitidos (emailCodeGuard).
+        const forgetWindow = (userId) =>
+            db.query('UPDATE deletion_requests SET created_at = created_at - INTERVAL 25 HOUR WHERE user_id = ?', [userId]);
+
+        const A = 'webdel_jest@jest.com'; // activa, con datos
+        const D = 'webdel_desact_jest@jest.com'; // desactivada
+        const S = 'webdel_susp_jest@jest.com'; // suspendida
+        let aId;
+        let aToken;
+        let aLogs = [];
+        let dId;
+        let sId;
+
+        beforeAll(async () => {
+            const a = await register('webdel_jest');
+            aId = a.body.user.id;
+            aToken = a.body.token;
+            const log = (await request(app).post('/api/readings').set(auth(aToken)).send({
+                bookData: { external_id: '/works/OLWEB1W', title: 'Libro Web', page_count: 50 },
+                logData: { status: 'leyendo', is_log_public: true },
+            })).body.logId;
+            aLogs = [log];
+            await request(app).post(`/api/readings/${log}/session`).set(auth(aToken))
+                .send({ duration_minutes: 10, pages_read: 5 });
+            await request(app).post('/api/users/goal').set(auth(aToken)).send({ target_books: 3 });
+
+            const d = await register('webdel_desact_jest');
+            dId = d.body.user.id;
+            await request(app).post('/api/account/deactivate').set(auth(d.body.token)).send({ password: PASSWORD });
+            const s = await register('webdel_susp_jest');
+            sId = s.body.user.id;
+            await db.query("UPDATE users SET status = 'suspended' WHERE id = ?", [sId]);
+        });
+
+        test('sin sesión: respuesta idéntica para email inexistente, activo, desactivado y suspendido', async () => {
+            const before = outbox.length;
+            const ghost = await askCode('nadie_web@jest.com');
+            expect(ghost.statusCode).toBe(200);
+            expect(ghost.body).toEqual({ message: SAME_MESSAGE });
+            expect(outbox.length).toBe(before); // a un email desconocido no se envía nada
+
+            for (const email of [A, D, S]) {
+                const res = await askCode(email);
+                expect(res.statusCode).toBe(200);
+                expect(res.body).toEqual(ghost.body);
+                expect(deletionMails(email)).toHaveLength(1);
+            }
+        });
+
+        test('el correo explica qué se borra, trae el código y no lleva enlaces', () => {
+            const [mail] = deletionMails(A);
+            expect(mail.subject).not.toMatch(/\d{6}/); // el código no va en el asunto
+            expect(mail.text).toMatch(/\b\d{6}\b/);
+            expect(mail.text).toContain('lecturas');
+            expect(mail.text).toContain('No se puede deshacer');
+            expect(mail.text).toContain('tu cuenta sigue intacta');
+            expect(`${mail.text}${mail.html}`).not.toMatch(/https?:|href=/i);
+        });
+
+        test('email con mayúsculas y espacios se normaliza igual que en el registro', async () => {
+            await skipCooldown();
+            const res = await askCode('  WebDel_Jest@JEST.com ');
+            expect(res.statusCode).toBe(200);
+            expect(res.body.message).toBe(SAME_MESSAGE);
+            expect(deletionMails(A)).toHaveLength(2);
+        });
+
+        test('solo un código por minuto por cuenta (misma respuesta, sin correo nuevo)', async () => {
+            const before = outbox.length;
+            const res = await askCode(A);
+            expect(res.statusCode).toBe(200);
+            expect(res.body.message).toBe(SAME_MESSAGE);
+            expect(outbox.length).toBe(before);
+        });
+
+        test('pedir otro código invalida el anterior', async () => {
+            const old = lastCode(A);
+            await skipCooldown();
+            await askCode(A);
+            const [pending] = await db.query(
+                'SELECT COUNT(*) AS n FROM deletion_requests WHERE user_id = ? AND used_at IS NULL', [aId]);
+            expect(pending[0].n).toBe(1);
+            if (old !== lastCode(A)) { // (1 entre un millón de que coincidan)
+                const res = await confirm(A, old);
+                expect(res.statusCode).toBe(400);
+                expect(res.body).toEqual(INVALID);
+            }
+        });
+
+        test('formato inválido → 400 VALIDATION_ERROR', async () => {
+            for (const body of [{ email: A }, { email: A, code: '12345' }, { email: 'no-es-email', code: '123456' }]) {
+                const res = await request(app).post('/api/account/deletion-confirm').send(body);
+                expect(res.statusCode).toBe(400);
+                expect(res.body.code).toBe('VALIDATION_ERROR');
+            }
+        });
+
+        test('email inexistente → el mismo 400 genérico', async () => {
+            const res = await confirm('nadie_web@jest.com', '123456');
+            expect(res.statusCode).toBe(400);
+            expect(res.body).toEqual(INVALID);
+        });
+
+        test('código incorrecto → 400, suma intento; tras 5 ni el correcto sirve y nada se borra', async () => {
+            await skipCooldown();
+            await askCode(A); // código nuevo con 0 intentos
+            const code = lastCode(A);
+            for (let i = 1; i <= 5; i++) {
+                const res = await confirm(A, wrongCode(code));
+                expect(res.statusCode).toBe(400);
+                expect(res.body).toEqual(INVALID);
+                const [rows] = await db.query(
+                    'SELECT attempts FROM deletion_requests WHERE user_id = ? AND used_at IS NULL', [aId]);
+                expect(rows[0].attempts).toBe(i);
+            }
+            const res = await confirm(A, code);
+            expect(res.statusCode).toBe(400);
+            expect(res.body).toEqual(INVALID);
+            const [users] = await db.query('SELECT id FROM users WHERE id = ?', [aId]);
+            expect(users).toHaveLength(1);
+        });
+
+        test('código vencido → 400', async () => {
+            await skipCooldown();
+            await askCode(A);
+            await db.query(
+                'UPDATE deletion_requests SET expires_at = NOW() - INTERVAL 1 MINUTE WHERE user_id = ? AND used_at IS NULL',
+                [aId]);
+            const res = await confirm(A, lastCode(A));
+            expect(res.statusCode).toBe(400);
+            expect(res.body).toEqual(INVALID);
+        });
+
+        test('un código de recuperación no sirve para borrar, ni uno de borrado para cambiar la contraseña', async () => {
+            // A ya pidió 5 códigos hoy (el tope): se empieza una ventana nueva.
+            await forgetWindow(aId);
+            await skipCooldown();
+            await db.query('UPDATE password_resets SET created_at = created_at - INTERVAL 2 MINUTE');
+            await askCode(A);
+            await request(app).post('/api/auth/forgot-password').send({ email: A });
+            const deletionCode = lastCode(A);
+            const resetCode = lastCode(A, 'Tu código de LectorApp');
+            expect(resetCode).toMatch(/^\d{6}$/);
+
+            if (resetCode !== deletionCode) { // (1 entre un millón de que coincidan)
+                const del = await confirm(A, resetCode);
+                expect(del.statusCode).toBe(400);
+                expect(del.body).toEqual(INVALID);
+                const reset = await request(app).post('/api/auth/reset-password')
+                    .send({ email: A, code: deletionCode, password: 'otraClave123' });
+                expect(reset.statusCode).toBe(400);
+            }
+            // La cuenta sigue y su contraseña no cambió.
+            const login = await request(app).post('/api/auth/login').send({ email: A, password: PASSWORD });
+            expect(login.statusCode).toBe(200);
+        });
+
+        test('el código de una cuenta no sirve con el email de otra', async () => {
+            if (lastCode(S) !== lastCode(D)) {
+                const res = await confirm(D, lastCode(S));
+                expect(res.statusCode).toBe(400);
+                expect(res.body).toEqual(INVALID);
+            }
+            const [users] = await db.query('SELECT id FROM users WHERE id IN (?, ?)', [dId, sId]);
+            expect(users).toHaveLength(2);
+        });
+
+        test('código correcto → 200 { deleted: true } y NINGÚN rastro del usuario', async () => {
+            const code = lastCode(A);
+            const res = await confirm(A, code);
+            expect(res.statusCode).toBe(200);
+            expect(res.body).toEqual({ deleted: true });
+            expect(await traces(aId, 'webdel_jest', aLogs)).toEqual({});
+
+            // Sus sesiones dejan de valer.
+            const lib = await request(app).get('/api/readings/my-library').set(auth(aToken));
+            expect(lib.statusCode).toBe(401);
+
+            // Un código ya usado no sirve otra vez.
+            const again = await confirm(A, code);
+            expect(again.statusCode).toBe(400);
+            expect(again.body).toEqual(INVALID);
+        });
+
+        test('una cuenta suspendida también puede eliminarse desde la web', async () => {
+            const res = await confirm(S, lastCode(S));
+            expect(res.statusCode).toBe(200);
+            expect(res.body).toEqual({ deleted: true });
+            expect(await traces(sId, 'webdel_susp_jest', [])).toEqual({});
+        });
+
+        test('una cuenta desactivada también puede eliminarse desde la web', async () => {
+            const res = await confirm(D, lastCode(D));
+            expect(res.statusCode).toBe(200);
+            expect(await traces(dId, 'webdel_desact_jest', [])).toEqual({});
+        });
+
+        test('tras borrar, pedir código para ese email da la misma respuesta y no envía nada', async () => {
+            await skipCooldown();
+            const before = outbox.length;
+            const res = await askCode(A);
+            expect(res.statusCode).toBe(200);
+            expect(res.body).toEqual({ message: SAME_MESSAGE });
+            expect(outbox.length).toBe(before);
+        });
+
+        test('dos confirmaciones simultáneas con el código correcto: una 200, la otra 400, nunca 500', async () => {
+            const c = await register('webdel_doble_jest');
+            const email = 'webdel_doble_jest@jest.com';
+            await askCode(email);
+            const code = lastCode(email);
+            const [r1, r2] = await Promise.all([confirm(email, code), confirm(email, code)]);
+            expect([r1.statusCode, r2.statusCode].sort()).toEqual([200, 400]);
+            expect(await traces(c.body.user.id, 'webdel_doble_jest', [])).toEqual({});
+        });
+    });
+
+    describe('Tope por cuenta de los códigos por correo (revisión 2.3)', () => {
+        const PASSWORD = 'password123';
+        const INVALID = { error: 'El código no es válido o ya venció. Pide uno nuevo.', code: 'VALIDATION_ERROR' };
+        const DEL_SUBJECT = 'Código para eliminar tu cuenta de LectorApp';
+        const RESET_SUBJECT = 'Tu código de LectorApp';
+        const FLOWS = {
+            deletion: {
+                table: 'deletion_requests',
+                subject: DEL_SUBJECT,
+                ask: (email) => request(app).post('/api/account/deletion-request').send({ email }),
+                confirm: (email, code) => request(app).post('/api/account/deletion-confirm').send({ email, code }),
+            },
+            reset: {
+                table: 'password_resets',
+                subject: RESET_SUBJECT,
+                ask: (email) => request(app).post('/api/auth/forgot-password').send({ email }),
+                confirm: (email, code) => request(app).post('/api/auth/reset-password')
+                    .send({ email, code, password: 'claveNueva123' }),
+            },
+        };
+        const register = async (username) => (await request(app).post('/api/auth/register')
+            .send({ username, email: `${username}@jest.com`, password: PASSWORD, accept_terms: true })).body.user.id;
+        const mailsTo = (email, subject) => outbox.filter((m) => m.to === email && m.subject.startsWith(subject));
+        const lastCode = (email, subject) => mailsTo(email, subject).pop().text.match(/\b(\d{6})\b/)[1];
+        const wrong = (code) => (code === '000000' ? '000001' : '000000');
+        const age = (table, userId, sql) =>
+            db.query(`UPDATE ${table} SET created_at = created_at - INTERVAL ${sql} WHERE user_id = ?`, [userId]);
+
+        for (const [name, flow] of Object.entries(FLOWS)) {
+            test(`${name}: máximo 5 códigos por cuenta en 24 h (misma respuesta, sin correo)`, async () => {
+                const username = `tope_${name}_jest`;
+                const email = `${username}@jest.com`;
+                const userId = await register(username);
+                const first = await flow.ask(email);
+                for (let i = 2; i <= 6; i++) {
+                    await age(flow.table, userId, '2 MINUTE'); // pasado el enfriamiento de 60 s
+                    const res = await flow.ask(email);
+                    expect(res.statusCode).toBe(200);
+                    expect(res.body).toEqual(first.body);
+                }
+                expect(mailsTo(email, flow.subject)).toHaveLength(5);
+
+                // Pasadas 24 h, vuelve a poder pedir.
+                await age(flow.table, userId, '25 HOUR');
+                await flow.ask(email);
+                expect(mailsTo(email, flow.subject)).toHaveLength(6);
+            });
+
+            test(`${name}: tras 10 intentos fallidos en 24 h (entre varios códigos) ni el correcto sirve`, async () => {
+                const username = `fallos_${name}_jest`;
+                const email = `${username}@jest.com`;
+                const userId = await register(username);
+
+                // 5 fallos con el 1.er código, 4 con el 2.º, 1 con el 3.º = 10.
+                for (const fails of [5, 4, 1]) {
+                    await age(flow.table, userId, '2 MINUTE');
+                    await flow.ask(email);
+                    const code = lastCode(email, flow.subject);
+                    for (let i = 0; i < fails; i++) {
+                        const res = await flow.confirm(email, wrong(code));
+                        expect(res.statusCode).toBe(400);
+                        expect(res.body).toEqual(INVALID);
+                    }
+                }
+                const code = lastCode(email, flow.subject);
+                const blocked = await flow.confirm(email, code); // vigente, con 1 solo intento
+                expect(blocked.statusCode).toBe(400);
+                expect(blocked.body).toEqual(INVALID);
+
+                // Tampoco se emiten códigos nuevos (misma respuesta 200, sin correo).
+                const sent = mailsTo(email, flow.subject).length;
+                await age(flow.table, userId, '2 MINUTE');
+                const asked = await flow.ask(email);
+                expect(asked.statusCode).toBe(200);
+                expect(mailsTo(email, flow.subject)).toHaveLength(sent);
+
+                // La cuenta y su contraseña siguen intactas.
+                const login = await request(app).post('/api/auth/login').send({ email, password: PASSWORD });
+                expect(login.statusCode).toBe(200);
+
+                // Pasadas 24 h, un código nuevo funciona.
+                await age(flow.table, userId, '25 HOUR');
+                await flow.ask(email);
+                const ok = await flow.confirm(email, lastCode(email, flow.subject));
+                expect(ok.statusCode).toBe(200);
+            });
+        }
+
+        test('reset con email inexistente también calcula el bcrypt (sin enumeración por tiempos)', async () => {
+            const bcrypt = require('bcryptjs');
+            const spy = jest.spyOn(bcrypt, 'hash');
+            try {
+                const ghost = await FLOWS.reset.confirm('nadie_reset_tope@jest.com', '123456');
+                expect(ghost.statusCode).toBe(400);
+                expect(ghost.body).toEqual(INVALID);
+                expect(spy).toHaveBeenCalledTimes(1);
+                expect(spy).toHaveBeenCalledWith('claveNueva123', expect.any(Number));
+
+                await register('reset_hash_jest');
+                const existing = await FLOWS.reset.confirm('reset_hash_jest@jest.com', '123456');
+                expect(existing.statusCode).toBe(400);
+                expect(existing.body).toEqual(ghost.body);
+                expect(spy).toHaveBeenCalledTimes(1 + 2); // el registro (1) + el reset (1)
+            } finally {
+                spy.mockRestore();
+            }
+        });
+
+        test('agotar el tope del reset no bloquea la eliminación (y al revés)', async () => {
+            const username = 'tope_cruzado_jest';
+            const email = `${username}@jest.com`;
+            const userId = await register(username);
+            for (let i = 0; i < 2; i++) {
+                await age('password_resets', userId, '2 MINUTE');
+                await FLOWS.reset.ask(email);
+                const code = lastCode(email, RESET_SUBJECT);
+                for (let j = 0; j < 5; j++) await FLOWS.reset.confirm(email, wrong(code));
+            }
+            await FLOWS.deletion.ask(email);
+            const res = await FLOWS.deletion.confirm(email, lastCode(email, DEL_SUBJECT));
+            expect(res.statusCode).toBe(200);
+            expect(await traces(userId, username, [])).toEqual({});
         });
     });
 });

@@ -23,6 +23,8 @@
  *    reading_logs.public_before_deactivation (visibilidad a restaurar al reactivar) y
  *    reading_logs.moderation_locked_at (privada permanente por moderación, D4; la usará la 3.1,
  *    pero la reactivación ya la respeta).
+ * 11. Eliminar la cuenta desde la web (tarea 2.3): tabla deletion_requests (códigos de 6 dígitos
+ *    guardados como HMAC, por user_id; se borran junto con la cuenta).
  */
 require('dotenv').config({ quiet: true });
 const db = require('../src/config/db');
@@ -194,6 +196,21 @@ async function migrate() {
             console.log(`[10] ${table}.${column} creada`);
         }
     }
+
+    // 11. Solicitudes de eliminación desde la web. Mismo esquema que password_resets: por user_id
+    // (no por hash del email) para que el borrado de la cuenta se lleve también estas filas.
+    await db.query(`CREATE TABLE IF NOT EXISTS deletion_requests (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id INT NOT NULL,
+      code_hash CHAR(64) NOT NULL,
+      expires_at DATETIME NOT NULL,
+      attempts TINYINT UNSIGNED NOT NULL DEFAULT 0,
+      used_at DATETIME NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_deletion_user (user_id, used_at),
+      CONSTRAINT fk_deletion_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )`);
+    console.log('[11] Tabla deletion_requests lista');
 }
 
 migrate()

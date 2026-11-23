@@ -1,4 +1,5 @@
 const AccountService = require('../../services/account.service');
+const DeletionRequestService = require('../../services/deletionRequest.service');
 
 const acceptTerms = async (req, res) => {
     res.json(await AccountService.acceptTerms(req.user.id));
@@ -21,4 +22,26 @@ const deleteAccount = async (req, res) => {
     res.json(await AccountService.deleteAccount(req.user.id, req.body.password, req.token));
 };
 
-module.exports = { acceptTerms, getStatus, deactivate, reactivate, deleteAccount };
+// --- Eliminar la cuenta desde la web, sin sesión (tarea 2.3) ---
+
+// Misma respuesta exista o no la cuenta (y esté como esté): no revela qué emails están registrados.
+const requestDeletion = async (req, res) => {
+    await DeletionRequestService.requestDeletion(req.body);
+    res.json({
+        message: 'Si el email está registrado, te enviamos un código para confirmar. Revisa también la carpeta de spam.',
+    });
+};
+
+const confirmDeletion = async (req, res) => {
+    res.json(await DeletionRequestService.confirmDeletion(req.body));
+};
+
+module.exports = {
+    acceptTerms,
+    getStatus,
+    deactivate,
+    reactivate,
+    deleteAccount,
+    requestDeletion,
+    confirmDeletion,
+};
